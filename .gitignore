@@ -1,0 +1,14 @@
+# Udon programs MenSharp generates from the sources on every compile. Nothing
+# references them (panels use the programs of their own subclasses), and a
+# project that installs the package gets them regenerated, so they are not
+# versioned (the base class alone is over 10 MB and changes with every edit).
+/Runtime/Programs/
+/Runtime/Programs.meta
+/Samples~/Demos/Programs/
+/Samples~/Demos/Programs.meta
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

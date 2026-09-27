@@ -1,0 +1,20 @@
+{
+    "name": "io.tesca.menui.Editor",
+    "rootNamespace": "",
+    "references": [
+        "io.tesca.menui",
+        "ProjectTesca.MenSharp.Runtime",
+        "Unity.TextMeshPro"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

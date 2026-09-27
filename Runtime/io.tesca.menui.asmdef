@@ -1,0 +1,18 @@
+{
+    "name": "io.tesca.menui",
+    "rootNamespace": "",
+    "references": [
+        "ProjectTesca.MenSharp.Runtime",
+        "UdonSharp.Runtime",
+        "Unity.TextMeshPro"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
