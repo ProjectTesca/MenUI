@@ -64,6 +64,12 @@ namespace MenUI
             tmp.enableWordWrapping = true;
         }
 
+        /// Height of `lines` lines of text at `fontSize`, as Shape measures it.
+        internal int LineBoxHeight(float fontSize, int lines)
+        {
+            return Mathf.CeilToInt(((ascender - descender) + (lines - 1) * lineHeight) * fontSize);
+        }
+
         /// Shapes into `result` unless it already holds this exact shaping.
         internal void Shape(ShapedText result, string text, float fontSize, int maxWidth, TextAlignMode align)
         {

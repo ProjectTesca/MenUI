@@ -4,7 +4,8 @@
     "references": [
         "io.tesca.menui",
         "ProjectTesca.MenSharp.Runtime",
-        "Unity.TextMeshPro"
+        "Unity.TextMeshPro",
+        "UnityEngine.UI"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

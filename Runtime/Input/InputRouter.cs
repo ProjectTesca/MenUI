@@ -202,6 +202,12 @@ namespace MenUI
             }
         }
 
+        /// What pointer `slot` is over (null: nothing, or no such pointer).
+        internal Element HoverTarget(int slot)
+        {
+            return slotUsed[slot] ? target[slot] : null;
+        }
+
         private int SlotFor(int pointerId)
         {
             int free = -1;
@@ -241,6 +247,7 @@ namespace MenUI
             if (pressed && !wasPressed[slot])
             {
                 clickCancelled[slot] = false;
+                context.textInput.Pressed(current);
                 captured[slot] = current;
                 SetActive(slot, current);
                 dragCandidate[slot] = NearestDraggable(current);
@@ -336,7 +343,7 @@ namespace MenUI
                     continue;
                 }
                 bool listening = e.pointerHandlers != null || e.hoverStyle != null || e.activeStyle != null
-                    || e.dragSource != null || e.dropTarget != null
+                    || e.dragSource != null || e.dropTarget != null || e is TextBox
                     || (e.stateRuleMask & (PseudoState.Hover | PseudoState.Active)) != 0;
                 bool opaque = s.ColorOf(StyleProperty.Background).a > 0f
                     || s.numbers[StyleProperty.BorderTopWidth] + s.numbers[StyleProperty.BorderRightWidth]

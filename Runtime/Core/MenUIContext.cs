@@ -47,6 +47,11 @@ namespace MenUI
         internal readonly List<Element> paintQueue = new List<Element>();
         internal readonly List<Element> styleQueue = new List<Element>();
         internal readonly List<StyleSheet> styleSheets = new List<StyleSheet>();
+        /// MenUI's own rules (a browser's user-agent style sheet): the first
+        /// sheet, so every rule of yours wins over it. Components add their
+        /// rules when first used.
+        internal readonly StyleSheet defaultSheet = new StyleSheet();
+        private bool textBoxStylesAdded;
         internal int reconcileStamp;
         /// The set or order of records changes: repaint everything.
         internal bool paintStructureDirty = true;
@@ -62,6 +67,7 @@ namespace MenUI
         private IPointerSource pointerSource;
         private readonly PanelSurface surface;
         private readonly PointerSample[] samples = new PointerSample[InputRouter.MaxPointers];
+        internal readonly TextInputCoordinator textInput;
 
         // Transform groups (scrolling, translate) and time for animations.
         internal readonly TransformGroups groups;
@@ -85,7 +91,13 @@ namespace MenUI
             PanelSurface surface = null)
         {
             this.surface = surface;
+            if (surface != null)
+            {
+                surface.LogicalWidth = bufferWidth / scale;
+                surface.LogicalHeight = bufferHeight / scale;
+            }
             router = new InputRouter(this);
+            textInput = new TextInputCoordinator(this);
             groups = new TransformGroups(bufferWidth, bufferHeight);
             layoutTick = new Signal<int>(runtime, 0);
             for (int i = 0; i < samples.Length; i++)
@@ -114,6 +126,7 @@ namespace MenUI
             overlayRoot.inlineStyle.SetEnum(StyleProperty.PointerEvents, (int)PointerEventsMode.None);
             root.MarkStyleDirty();
             overlayRoot.MarkStyleDirty();
+            AddStyleSheet(defaultSheet);
         }
 
         /// Logical size of the panel (what 100% width and height mean).
@@ -130,16 +143,27 @@ namespace MenUI
             }
         }
 
-        /// Polls the pointer source and routes its samples; call once a frame
-        /// before Update, so what the handlers change is drawn this frame.
+        /// Installs the text entry layer (null: text boxes cannot be typed in).
+        public void SetTextInputHost(ITextInputHost host)
+        {
+            textInput.host = host;
+            if (host != null && surface != null)
+            {
+                host.Attach(surface);
+            }
+        }
+
+        /// Polls the pointer source and routes its samples, then lets the text
+        /// input host follow; call once a frame before Update, so what the
+        /// handlers change is drawn this frame.
         internal void ProcessInput()
         {
-            if (pointerSource == null)
+            if (pointerSource != null)
             {
-                return;
+                int count = pointerSource.Poll(samples);
+                router.Process(samples, count);
             }
-            int count = pointerSource.Poll(samples);
-            router.Process(samples, count);
+            textInput.Update();
         }
 
         /// Runs the pipeline stages that have work to do; call once a frame.
@@ -380,6 +404,35 @@ namespace MenUI
             TextElement element = new TextElement(this, string.Empty);
             Bind(() => element.SetContent(content()));
             return element;
+        }
+
+        /// A one-line text box editing `value` (CSS `input`).
+        public TextBox TextBox(Signal<string> value)
+        {
+            return new TextBox(this, value, false);
+        }
+
+        /// A text box of several lines editing `value` (CSS `textarea`).
+        public TextBox TextArea(Signal<string> value)
+        {
+            return new TextBox(this, value, true);
+        }
+
+        internal void EnsureTextBoxStyles()
+        {
+            if (textBoxStylesAdded)
+            {
+                return;
+            }
+            textBoxStylesAdded = true;
+            Color accent = Colors.Hex(0x0969DA);
+            defaultSheet
+                .Rule("input, textarea", s => s.Padding(6, 10).Background(Colors.White).TextColor(Colors.Hex(0x1F2328))
+                    .Border(1, Colors.Hex(0xD0D7DE)).BorderRadius(6))
+                .Rule("input:hover, textarea:hover", s => s.BorderColor(Colors.Hex(0x8C959F)))
+                .Rule("input:focus, textarea:focus", s => s.BorderColor(accent)
+                    .BoxShadow(new Shadow(0f, 0f, 0f, 3f, new Color(accent.r, accent.g, accent.b, 0.3f))))
+                .Rule("input:disabled, textarea:disabled", s => s.Opacity(0.5f));
         }
 
         public Signal<T> Signal<T>(T initial)

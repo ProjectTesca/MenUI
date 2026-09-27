@@ -38,6 +38,8 @@ namespace MenUI
 
         private readonly PanelRenderer renderer;
         private int generation;
+        /// Elements drawn by the last full paint carry this paintGeneration.
+        internal int Generation { get { return generation; } }
         // Every element whose box was painted, in paint order (bottom first),
         // published for hit testing (MenUIContext.paintOrder).
         private List<Element> paintOrder;
@@ -360,6 +362,14 @@ namespace MenUI
 
         internal void Glyphs(Element e, ShapedText text, int originX, int originY, Color color, float opacity)
         {
+            Glyphs(e, text, originX, originY, color, opacity, e.clipLeft, e.clipTop, e.clipRight, e.clipBottom);
+        }
+
+        /// Glyphs clipped to a rectangle of the element's own (already within
+        /// its clip) — a text box clips its text to its content box.
+        internal void Glyphs(Element e, ShapedText text, int originX, int originY, Color color, float opacity,
+            int clipLeft, int clipTop, int clipRight, int clipBottom)
+        {
             if (!e.computed.IsVisible)
             {
                 return;
@@ -375,7 +385,8 @@ namespace MenUI
                 int o = g * ShapedText.FloatsPerGlyph;
                 float left = originX + glyphs[o];
                 float top = originY + glyphs[o + 1];
-                int record = Begin(e, left, top, glyphs[o + 2] - glyphs[o], glyphs[o + 3] - glyphs[o + 1]);
+                int record = Begin(left, top, glyphs[o + 2] - glyphs[o], glyphs[o + 3] - glyphs[o + 1],
+                    clipLeft, clipTop, clipRight, clipBottom);
                 if (record < 0) continue;
                 renderer.Texel(record, 2, linear);
                 renderer.Texel(record, 3, glyphs[o + 4], glyphs[o + 5], glyphs[o + 6], glyphs[o + 7]);
@@ -387,7 +398,12 @@ namespace MenUI
         /// quad is clipped away entirely or the buffer is full.
         private int Begin(Element e, float x, float y, float width, float height)
         {
-            if (x >= e.clipRight || y >= e.clipBottom || x + width <= e.clipLeft || y + height <= e.clipTop)
+            return Begin(x, y, width, height, e.clipLeft, e.clipTop, e.clipRight, e.clipBottom);
+        }
+
+        private int Begin(float x, float y, float width, float height, int clipLeft, int clipTop, int clipRight, int clipBottom)
+        {
+            if (x >= clipRight || y >= clipBottom || x + width <= clipLeft || y + height <= clipTop)
             {
                 return -1;
             }
@@ -397,7 +413,7 @@ namespace MenUI
                 return -1;
             }
             renderer.Texel(record, 0, x, y, width, height);
-            renderer.Texel(record, 1, e.clipLeft, e.clipTop, e.clipRight, e.clipBottom);
+            renderer.Texel(record, 1, clipLeft, clipTop, clipRight, clipBottom);
             return record;
         }
 

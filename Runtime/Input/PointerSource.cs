@@ -62,6 +62,10 @@ namespace MenUI
         /// The quad the panel is shown on (a unit quad, scaled to size).
         public Transform Display { get { return display; } }
 
+        /// The panel's size in logical pixels (what the quad shows).
+        public float LogicalWidth { get; internal set; }
+        public float LogicalHeight { get; internal set; }
+
         /// Intersects a world-space ray with the panel. Hits from either side
         /// count; returns false when the ray misses the panel's rectangle.
         public bool Raycast(Vector3 origin, Vector3 direction, out float u, out float v, out float distance)

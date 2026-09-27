@@ -42,6 +42,26 @@ renderer, text shaping) is set up automatically.
   without layout. `VirtualList` for long lists.
 - **Input** — device-independent routing (hit testing, capture, bubbling
   events, drag and drop) behind `IPointerSource`; a desktop source is included.
+- **Text boxes** — `TextBox` / `TextArea` bound to a `Signal<string>`, typed
+  through VRChat's own input UI (desktop window or VR keyboard, IME included)
+  behind `ITextInputHost`.
+
+## Text boxes
+
+```csharp
+var name = Signal("");
+TextBox(name).Placeholder("Your name").MaxLength(40).OnCommit(value => Save(value));
+TextArea(notes).Rows(4);
+TextBox(password).Password();
+```
+
+VRChat opens its input UI only when a player clicks a real uGUI `InputField`
+(activating one from code does not). So MenUI draws the box, and the default
+host (`InputFieldTextInputHost`) lays a transparent `InputField` over each box
+a pointer is on, following MenUI's hit testing (nothing covering the box is
+shadowed); what is typed is read back into the signal. There is no caret: the
+editing happens in VRChat's UI. Style boxes with the `input` / `textarea`
+tags (`:hover`, `:focus`, `:disabled`); MenUI's defaults are the lowest rules.
 
 ## Fonts
 
@@ -58,7 +78,8 @@ sheet.Rule(".title", s => s.FontFamily("M PLUS Rounded, Noto Sans JP"));
 ## Samples
 
 Package Manager › MenUI › Samples › **Demos**: a CSS tour, scrolling with a
-10,000-row virtual list, and a drag-and-drop kanban board.
+10,000-row virtual list, a drag-and-drop kanban board, and a form with text
+boxes.
 
 ## Developing MenUI
 

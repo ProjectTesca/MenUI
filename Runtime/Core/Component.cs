@@ -16,6 +16,8 @@ namespace MenUI
         protected Box Div() { return context.Div(); }
         protected TextElement Text(string content) { return context.Text(content); }
         protected TextElement Text(Func<string> content) { return context.Text(content); }
+        protected TextBox TextBox(Signal<string> value) { return context.TextBox(value); }
+        protected TextBox TextArea(Signal<string> value) { return context.TextArea(value); }
         protected Signal<T> Signal<T>(T initial) { return context.Signal(initial); }
         protected Computed<T> Computed<T>(Func<T> compute) { return context.Computed(compute); }
         protected Effect Effect(Action body) { return context.Effect(body); }

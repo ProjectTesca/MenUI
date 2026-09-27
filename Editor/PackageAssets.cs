@@ -171,6 +171,12 @@ namespace MenUI.Editor
             return CreateDynamicFontAsset(font, DefaultFontAssetPath);
         }
 
+        /// The bundled font file itself (for uGUI text).
+        public static Font DefaultFont()
+        {
+            return AssetDatabase.LoadAssetAtPath<Font>(DefaultFontFile);
+        }
+
         public static bool IsDefaultFontAsset(TMP_FontAsset asset)
         {
             return asset != null && AssetDatabase.GetAssetPath(asset) == DefaultFontAssetPath;

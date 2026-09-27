@@ -1,6 +1,7 @@
 // Sets a MenUI panel up the moment a MenUIApp component is added: the quad
-// that shows the panel, the offscreen camera and quad pool that draw it, and
-// one hidden TextMeshPro object per registered font that shapes its text.
+// that shows the panel, the offscreen camera and quad pool that draw it, one
+// hidden TextMeshPro object per registered font that shapes its text, and the
+// transparent input fields that text boxes are typed through.
 // Udon cannot create GameObjects, so all of this has to exist in the scene
 // beforehand — but the user never has to build it by hand.
 //
@@ -17,8 +18,11 @@ using TMPro;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
+using VRC.SDK3.Components;
 
 namespace MenUI.Editor
 {
@@ -27,6 +31,12 @@ namespace MenUI.Editor
     {
         private const string RigName = "MenUI Rig";
         private const string DisplayName = "MenUI Display";
+        private const string TextInputName = "MenUI Text Input";
+        // One per pointer that can hover a text box, plus the one last pressed.
+        private const int TextInputFieldCount = 5;
+        // The panel's collider is this thin, and the input canvas sits just
+        // in front of it: VRChat's pointer must reach the canvas first.
+        private const float ColliderDepth = 0.001f;
         private const int RenderLayer = 31;
         private const float MetersPerLogicalPixel = 0.0015f;
         private static readonly Vector3 RigOffset = new Vector3(0f, -1000f, 0f);
@@ -97,7 +107,9 @@ namespace MenUI.Editor
             foreach (MenUIApp app in PanelsInOpenScenes())
             {
                 if (app.shapingTexts == null || app.shapingTexts.Length == 0 || app.shapingTexts[0] == null
-                    || app.renderCamera == null || app.quadPoolRenderer == null || app.displayRenderer == null)
+                    || app.renderCamera == null || app.quadPoolRenderer == null || app.displayRenderer == null
+                    || app.textInputFields == null || app.textInputFields.Length == 0 || app.textInputFields[0] == null
+                    || app.textInputCanvas == null)
                 {
                     SetUp(app);
                 }
@@ -147,6 +159,7 @@ namespace MenUI.Editor
             Undo.RegisterFullObjectHierarchyUndo(panel, "Set up MenUI panel");
             RemoveChild(panel.transform, RigName);
             RemoveChild(panel.transform, DisplayName);
+            RemoveChild(panel.transform, TextInputName);   // set up by an earlier MenUI
 
             Mesh poolMesh = PackageAssets.QuadPoolMesh();
             Material panelMaterial = PackageAssets.PanelMaterial();
@@ -234,7 +247,12 @@ namespace MenUI.Editor
                 collider = Undo.AddComponent<BoxCollider>(panel);
             }
             collider.center = Vector3.zero;
-            collider.size = new Vector3(widthMeters, heightMeters, 0.02f);
+            collider.size = new Vector3(widthMeters, heightMeters, ColliderDepth);
+
+            InputField[] inputFields;
+            RectTransform[] inputTransforms;
+            RectTransform inputCanvas = CreateTextInput(display.transform, app.bufferWidth / app.scale, app.bufferHeight / app.scale,
+                out inputFields, out inputTransforms);
 
             Undo.RecordObject(app, "Set up MenUI panel");
             app.renderCamera = camera;
@@ -248,11 +266,85 @@ namespace MenUI.Editor
             app.fontDescenders = descenders;
             app.fontLineHeights = lineHeights;
             app.fontPaddings = paddings;
+            app.textInputFields = inputFields;
+            app.textInputTransforms = inputTransforms;
+            app.textInputCanvas = inputCanvas;
             EditorUtility.SetDirty(app);
             EditorSceneManager.MarkSceneDirty(panel.scene);
 
             Debug.Log("[MenUI] set up '" + panel.name + "' (" + app.bufferWidth + "x" + app.bufferHeight + " px, scale "
                 + app.scale + ", fonts: " + string.Join(", ", families) + ").", panel);
+        }
+
+        /// A world-space canvas over the display quad — its child, one unit
+        /// per logical pixel of the quad, so it follows the quad however that
+        /// is moved or resized — with inactive, fully transparent input
+        /// fields; VRC Ui Shape makes VRChat's pointers click them.
+        private static RectTransform CreateTextInput(Transform display, float logicalWidth, float logicalHeight,
+            out InputField[] fields, out RectTransform[] transforms)
+        {
+            GameObject canvasObject = new GameObject(TextInputName, typeof(RectTransform), typeof(Canvas),
+                typeof(CanvasScaler), typeof(GraphicRaycaster));
+            canvasObject.layer = LayerMask.NameToLayer("Default");
+            RectTransform canvasTransform = canvasObject.GetComponent<RectTransform>();
+            canvasTransform.SetParent(display, false);
+            canvasTransform.localPosition = new Vector3(0f, 0f, -InputFieldTextInputHost.Distance);
+            canvasTransform.localRotation = Quaternion.identity;
+            canvasTransform.localScale = new Vector3(1f / logicalWidth, 1f / logicalHeight, 1f);
+            canvasTransform.sizeDelta = new Vector2(logicalWidth, logicalHeight);
+            canvasObject.GetComponent<Canvas>().renderMode = RenderMode.WorldSpace;
+            canvasObject.AddComponent<VRCUiShape>();
+
+            Font font = PackageAssets.DefaultFont();
+            Color invisible = new Color(0f, 0f, 0f, 0f);
+            fields = new InputField[TextInputFieldCount];
+            transforms = new RectTransform[TextInputFieldCount];
+            for (int i = 0; i < TextInputFieldCount; i++)
+            {
+                GameObject fieldObject = new GameObject("Field " + i, typeof(RectTransform), typeof(Image), typeof(InputField));
+                fieldObject.layer = canvasObject.layer;
+                RectTransform rect = fieldObject.GetComponent<RectTransform>();
+                rect.SetParent(canvasTransform, false);
+                rect.anchorMin = rect.anchorMax = new Vector2(0f, 1f);
+                rect.pivot = new Vector2(0f, 1f);
+                rect.sizeDelta = new Vector2(100f, 30f);
+                // Invisible, but still hit by raycasts.
+                fieldObject.GetComponent<Image>().color = invisible;
+
+                GameObject textObject = new GameObject("Text", typeof(RectTransform), typeof(Text));
+                textObject.layer = canvasObject.layer;
+                RectTransform textRect = textObject.GetComponent<RectTransform>();
+                textRect.SetParent(rect, false);
+                textRect.anchorMin = Vector2.zero;
+                textRect.anchorMax = Vector2.one;
+                textRect.offsetMin = Vector2.zero;
+                textRect.offsetMax = Vector2.zero;
+                Text text = textObject.GetComponent<Text>();
+                text.font = font;
+                text.fontSize = 16;
+                text.color = invisible;
+                text.supportRichText = false;
+                text.raycastTarget = false;
+
+                InputField field = fieldObject.GetComponent<InputField>();
+                field.textComponent = text;
+                field.customCaretColor = true;
+                field.caretColor = invisible;
+                field.selectionColor = invisible;
+                field.transition = Selectable.Transition.None;
+                fieldObject.SetActive(false);
+                fields[i] = field;
+                transforms[i] = rect;
+            }
+
+            // uGUI events need an event system in the scene (VRChat and
+            // ClientSim drive it with their own pointers).
+            if (Object.FindFirstObjectByType<EventSystem>() == null)
+            {
+                GameObject eventSystem = new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
+                Undo.RegisterCreatedObjectUndo(eventSystem, "Set up MenUI panel");
+            }
+            return canvasTransform;
         }
 
         private static void RemoveChild(Transform parent, string name)

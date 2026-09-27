@@ -27,6 +27,14 @@ namespace MenUI
         }
     }
 
+    /// A text input host that records what MenUI offers it.
+    internal sealed class RecordingTextInputHost : ITextInputHost
+    {
+        internal readonly System.Collections.Generic.List<TextInputTarget> offered = new System.Collections.Generic.List<TextInputTarget>();
+        public void Attach(PanelSurface surface) { }
+        public void Update(System.Collections.Generic.List<TextInputTarget> targets) { offered.Clear(); offered.AddRange(targets); }
+    }
+
     /// Unity's native logger does not exist here; collect messages instead.
     internal sealed class CollectingLogHandler : ILogHandler
     {
@@ -70,7 +78,7 @@ namespace MenUI
         static void PublishPaintOrder(MenUIContext ui)
         {
             ui.paintOrder.Clear();
-            void Walk(Element e) { ui.paintOrder.Add(e); foreach (var c in e.children) Walk(c); }
+            void Walk(Element e) { ui.paintOrder.Add(e); e.paintGeneration = ui.painter.Generation; foreach (var c in e.children) Walk(c); }
             Walk(ui.root);
             ui.hitVersion++;
         }
@@ -1027,6 +1035,99 @@ namespace MenUI
                 styled.FontFamily("Noto Sans JP");
                 Relayout(ui);
                 Check("font change relays out the text", inner.computed.FontIndex == 0 && ui.layout.arrangedCount > 0);
+            }
+
+
+            // ---- text boxes: size, default styles ----
+            {
+                var ui = NewContext(1f, 400, 300);
+                var name = ui.Signal("");
+                TextBox box = ui.TextBox(name).Placeholder("Name");
+                Box row = ui.Div().Flex().Row().Children(box);
+                Layout(ui, ui.Div().Children(row));
+                // content 160x24 (20 characters, one line) + padding 6/10 + border 1
+                Check("text box: intrinsic size of about 20 characters", box.Width == 182 && box.Height == 38, R(box));
+                name.Value = "a very long value that is much wider than the box could ever be";
+                Relayout(ui);
+                Check("text box: size does not follow the text", box.Width == 182 && box.Height == 38, R(box));
+                Check("text box: default look from the built-in sheet", box.computed.numbers[StyleProperty.BorderTopWidth] == 1f
+                    && box.computed.ColorOf(StyleProperty.Background) == Colors.White);
+
+                var notes = ui.Signal("");
+                TextBox area = ui.TextArea(notes).Rows(4);
+                var sheet = new StyleSheet().Rule(".field", s => s.Background(Colors.Hex(0x222222)).Padding(0).Border(0, Colors.Black));
+                ui.AddStyleSheet(sheet);
+                area.Class("field");
+                ui.root.children[0].AppendChild(area);
+                Relayout(ui);
+                Check("text area: fills a block container, Rows(4) high", area.Width == 400 && area.Height == 93, R(area));
+                Check("text box: a class rule overrides the built-in sheet", area.computed.ColorOf(StyleProperty.Background) == Colors.Hex(0x222222));
+                Check("text box: tags input / textarea", box.tag == "input" && area.tag == "textarea");
+            }
+
+            // ---- text boxes: what the text input host is offered, and what it reports ----
+            {
+                var ui = NewContext(1f, 400, 300);
+                var host = new RecordingTextInputHost();
+                ui.SetTextInputHost(host);
+                var name = ui.Signal("");
+                var off = ui.Signal(false);
+                string committedValue = null;
+                TextBox box = ui.TextBox(name).MaxLength(5).OnCommit(v => committedValue = v).Disabled(() => off.Value)
+                    .Absolute().Left(20).Top(30).Width(100).Height(30);
+                Box other = ui.Div().Absolute().Left(200).Top(200).Size(50, 50).Background(Colors.Black);
+                Layout(ui, ui.Div().FullSize().Children(box, other));
+                PublishPaintOrder(ui);
+
+                Pointer(ui, 300, 20, false);
+                ui.textInput.Update();
+                Check("text input: nothing offered while nothing is hovered", host.offered.Count == 0);
+                Pointer(ui, 50, 40, false);
+                ui.textInput.Update();
+                Check("text input: the hovered box is offered with its rectangle", host.offered.Count == 1
+                    && host.offered[0].Left == 20 && host.offered[0].Top == 30 && host.offered[0].Width == 100 && host.offered[0].Height == 30,
+                    host.offered.Count == 1 ? $"{host.offered[0].Left},{host.offered[0].Top} {host.offered[0].Width}x{host.offered[0].Height}" : "");
+                Pointer(ui, 50, 40, true);
+                Pointer(ui, 50, 40, false);
+                Pointer(ui, 300, 20, false);
+                ui.textInput.Update();
+                Check("text input: the last pressed box stays offered", host.offered.Count == 1);
+                Pointer(ui, 220, 220, true);
+                Pointer(ui, 220, 220, false);
+                ui.textInput.Update();
+                Check("text input: a press elsewhere withdraws it", host.offered.Count == 0);
+
+                Pointer(ui, 50, 40, false);
+                ui.textInput.Update();
+                TextInputTarget target = host.offered[0];
+                target.ReportFocus(true, false);
+                Relayout(ui);
+                Check("text input: editing sets :focus", (box.pseudoStates & PseudoState.Focus) != 0 && box.IsEditing);
+                target.ReportText("hello world");
+                Check("text input: typed text reaches the signal, cut to MaxLength", name.Peek() == "hello");
+                Pointer(ui, 220, 220, true);
+                Pointer(ui, 220, 220, false);
+                ui.textInput.Update();
+                Check("text input: a box being edited stays offered", host.offered.Count == 1);
+                target.ReportFocus(false, false);
+                Check("text input: finishing commits the value", committedValue == "hello" && (box.pseudoStates & PseudoState.Focus) == 0);
+                committedValue = null;
+                target.ReportFocus(true, false);
+                target.ReportFocus(false, true);
+                Check("text input: cancelling does not commit", committedValue == null);
+                name.Value = "set by code";
+                Check("text input: the host sees the program's value", target.Text == "set by code");
+
+                off.Value = true;
+                Relayout(ui);
+                Pointer(ui, 60, 45, false);
+                ui.textInput.Update();
+                Check("text input: a disabled box is not offered", host.offered.Count == 0);
+
+                var lines = ui.Signal("");
+                TextBox single = ui.TextBox(lines);
+                single.target.ReportText("one\ntwo");
+                Check("text input: a one-line box turns newlines into spaces", lines.Peek() == "one two");
             }
 
             Console.WriteLine(failures == 0 ? "ALL PASSED" : failures + " FAILED");

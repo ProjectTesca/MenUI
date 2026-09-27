@@ -56,6 +56,11 @@ namespace MenUI
         public float[] fontDescenders;
         public float[] fontLineHeights;
         public float[] fontPaddings;
+        // Transparent input fields over the panel that bring up VRChat's
+        // input UI for text boxes (see InputFieldTextInputHost).
+        public UnityEngine.UI.InputField[] textInputFields;
+        public RectTransform[] textInputTransforms;
+        public RectTransform textInputCanvas;
 
         private MenUIContext ui;
 
@@ -82,6 +87,7 @@ namespace MenUI
                 return;
             }
             long start = Stopwatch.GetTimestamp();
+            FitColliderToDisplay();
             TextShaper[] shapers = new TextShaper[shapingTexts.Length];
             for (int i = 0; i < shapers.Length; i++)
             {
@@ -93,6 +99,7 @@ namespace MenUI
             ui = new MenUIContext(scale, bufferWidth, bufferHeight, shapers, fontFamilies, panelRenderer,
                 new PanelSurface(displayRenderer.transform));
             ui.SetPointerSource(CreatePointerSource());
+            ui.SetTextInputHost(CreateTextInputHost());
             ui.diagnostics = logPerformance;
             long created = Stopwatch.GetTimestamp();
 
@@ -174,6 +181,22 @@ namespace MenUI
             }
         }
 
+        /// The panel's collider covers the display quad wherever it was moved
+        /// or resized to (it stays thin: the text input fields in front of the
+        /// quad must be what pointers reach first).
+        private void FitColliderToDisplay()
+        {
+            BoxCollider panelCollider = GetComponent<BoxCollider>();
+            Transform display = displayRenderer.transform;
+            if (panelCollider == null || display.parent != transform)
+            {
+                return;
+            }
+            Vector3 size = display.localScale;
+            panelCollider.center = display.localPosition;
+            panelCollider.size = new Vector3(Mathf.Abs(size.x), Mathf.Abs(size.y), panelCollider.size.z);
+        }
+
         private static double Milliseconds(long ticks)
         {
             return ticks * 1000.0 / Stopwatch.Frequency;
@@ -192,6 +215,18 @@ namespace MenUI
             return new DesktopPointerSource();
         }
 
+        /// The text entry layer for this panel. The default lays transparent
+        /// InputFields over text boxes (VRChat's own input UI, desktop and
+        /// VR); override to plug in another (null: no typing).
+        protected virtual ITextInputHost CreateTextInputHost()
+        {
+            if (textInputFields == null || textInputFields.Length == 0)
+            {
+                return null;
+            }
+            return new InputFieldTextInputHost(textInputFields, textInputTransforms, textInputCanvas);
+        }
+
         /// Called after the first Build.
         protected virtual void OnMounted()
         {
@@ -202,6 +237,8 @@ namespace MenUI
         protected Box Div() { return ui.Div(); }
         protected TextElement Text(string content) { return ui.Text(content); }
         protected TextElement Text(Func<string> content) { return ui.Text(content); }
+        protected TextBox TextBox(Signal<string> value) { return ui.TextBox(value); }
+        protected TextBox TextArea(Signal<string> value) { return ui.TextArea(value); }
         protected Signal<T> Signal<T>(T initial) { return ui.Signal(initial); }
         protected Computed<T> Computed<T>(Func<T> compute) { return ui.Computed(compute); }
         protected Effect Effect(Action body) { return ui.Effect(body); }
