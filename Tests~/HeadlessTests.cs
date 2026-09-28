@@ -80,6 +80,7 @@ namespace MenUI
             ui.paintOrder.Clear();
             void Walk(Element e) { ui.paintOrder.Add(e); e.paintGeneration = ui.painter.Generation; foreach (var c in e.children) Walk(c); }
             Walk(ui.root);
+            Walk(ui.overlayRoot);
             ui.hitVersion++;
         }
         static PointerSample[] samples = { new PointerSample() };
@@ -99,6 +100,23 @@ namespace MenUI
             samples[0].ScrollDelta = scroll;
             ui.router.Process(samples, 1);
         }
+
+        // A click, then the pipeline stages (without paint) and a fresh paint order.
+        static void Click(MenUIContext ui, float x, float y)
+        {
+            Pointer(ui, x, y, true);
+            Pointer(ui, x, y, false);
+            Refresh(ui);
+        }
+        static void Refresh(MenUIContext ui)
+        {
+            Relayout(ui);
+            ui.groups.Resolve();
+            PublishPaintOrder(ui);
+        }
+        // Center of an element on the panel (physical px).
+        static float CenterX(MenUIContext ui, Element e) => e.X + ui.groups.offsets[e.group].x + e.Width / 2f;
+        static float CenterY(MenUIContext ui, Element e) => e.Y + ui.groups.offsets[e.group].y + e.Height / 2f;
 
         public static int Main()
         {
@@ -1128,6 +1146,161 @@ namespace MenUI
                 TextBox single = ui.TextBox(lines);
                 single.target.ReportText("one\ntwo");
                 Check("text input: a one-line box turns newlines into spaces", lines.Peek() == "one two");
+            }
+
+            // ---- fit-content ----
+            {
+                var ui = NewContext(1f, 400, 300);
+                Element fixedChild = new FakeText(ui, "abcdefghij");   // 70 wide
+                Box fit = ui.Div().Width(Length.FitContent).Padding(5).Children(fixedChild);
+                Box column = ui.Div().Flex().Column().Children(ui.Div().Width(Length.FitContent).Children(new FakeText(ui, "abc")));
+                Layout(ui, ui.Div().Children(fit, column));
+                Check("fit-content: a block child shrinks to its content", fit.Width == 80, R(fit));
+                Check("fit-content: a stretching flex item does not stretch", column.children[0].Width == 21, R(column.children[0]));
+            }
+
+            // ---- components ----
+            {
+                var ui = NewContext(1f, 600, 800);
+                var clicks = ui.Signal(0);
+                var agreed = ui.Signal(false);
+                var on = ui.Signal(false);
+                var size = ui.Signal(1);
+                var volume = ui.Signal(0f);
+                var steps = ui.Signal(0f);
+                var tab = ui.Signal(0);
+                var fruit = ui.Signal("Apple");
+                var dialogOpen = ui.Signal(false);
+
+                Box button = ui.Button("Save", ButtonVariant.Primary).OnClick(() => clicks.Value++);
+                Box checkbox = ui.Checkbox(agreed, "Agree");
+                Box toggle = ui.Switch(on, "On");
+                Box small = ui.Radio(size, 0, "Small");
+                Box large = ui.Radio(size, 2, "Large");
+                Box slider = ui.Slider(volume, 0f, 10f).Width(200);
+                Box stepped = ui.Slider(steps, 0f, 10f, 2f).Width(200);
+                Box tabs = ui.Tabs(tab, "One", "Two");
+                Box select = ui.Select(fruit, "Apple", "Banana", "Cherry").Width(150);
+                Region dialog = ui.Dialog(dialogOpen, () => ui.Div().Size(100, 50));
+                Box page = ui.Div().Flex().Column().AlignItems(Align.Start).Gap(10).Padding(10)
+                    .Children(button, checkbox, toggle, small, large, slider, stepped, tabs, select, dialog);
+                Layout(ui, ui.Div().FullSize().Children(page));
+                ui.groups.Resolve();
+                PublishPaintOrder(ui);
+
+                Check("button: tag, variant class, default look", button.tag == "button" && button.HasClass("primary")
+                    && button.computed.ColorOf(StyleProperty.Background) == Theme.Light.Accent);
+                Box inBlock = ui.Button("Wide?");
+                ui.root.children[0].AppendChild(inBlock);
+                Refresh(ui);
+                Check("button: fit-content even in a block container", inBlock.Width < 200, R(inBlock));
+                Click(ui, CenterX(ui, button), CenterY(ui, button));
+                Check("button: click", clicks.Peek() == 1);
+
+                Click(ui, CenterX(ui, checkbox), CenterY(ui, checkbox));
+                Check("checkbox: click toggles, class and look follow", agreed.Peek()
+                    && checkbox.children[0].HasClass("checked")
+                    && checkbox.children[0].computed.ColorOf(StyleProperty.Background) == Theme.Light.Accent);
+                Click(ui, CenterX(ui, checkbox), CenterY(ui, checkbox));
+                Check("checkbox: second click unchecks", !agreed.Peek());
+
+                Click(ui, CenterX(ui, toggle), CenterY(ui, toggle));
+                Element thumb = toggle.children[0].children[0];
+                int thumbBefore = thumb.X;
+                Frames(ui, 30);
+                Check("switch: toggles and the thumb slides over", on.Peek() && thumb.X == thumbBefore + 16,
+                    $"{thumbBefore} -> {thumb.X}");
+
+                Check("radio: initial selection", !small.children[0].HasClass("checked") && !large.children[0].HasClass("checked"));
+                Click(ui, CenterX(ui, large), CenterY(ui, large));
+                Check("radio: click selects its value", size.Peek() == 2 && large.children[0].HasClass("checked"));
+                Click(ui, CenterX(ui, small), CenterY(ui, small));
+                Check("radio: the group moves", size.Peek() == 0 && small.children[0].HasClass("checked")
+                    && !large.children[0].HasClass("checked"));
+
+                Pointer(ui, slider.X + 50, CenterY(ui, slider), true);
+                Check("slider: press sets the value", Mathf.Abs(volume.Peek() - 2.5f) < 0.01f, volume.Peek().ToString());
+                Pointer(ui, slider.X + 150, CenterY(ui, slider), true);
+                Check("slider: dragging follows", Mathf.Abs(volume.Peek() - 7.5f) < 0.01f, volume.Peek().ToString());
+                Pointer(ui, slider.X + 400, CenterY(ui, slider), true);
+                Check("slider: clamped past the end", volume.Peek() == 10f);
+                Pointer(ui, slider.X + 400, CenterY(ui, slider), false);
+                Refresh(ui);
+                Click(ui, stepped.X + 58, CenterY(ui, stepped));
+                Check("slider: steps", steps.Peek() == 2f, steps.Peek().ToString());
+
+                Click(ui, CenterX(ui, tabs.children[1]), CenterY(ui, tabs.children[1]));
+                Check("tabs: click selects", tab.Peek() == 1 && tabs.children[1].HasClass("selected")
+                    && !tabs.children[0].HasClass("selected"));
+
+                Click(ui, CenterX(ui, select), CenterY(ui, select));
+                Check("select: click opens the menu on the overlay", select.HasClass("open") && ui.overlayRoot.children.Count == 1);
+                Element layer = ui.overlayRoot.children[0];
+                Element menu = layer.children[0];
+                Check("select: menu under the select, as wide", menu.X == select.X && menu.Y >= select.Y + select.Height
+                    && menu.Width == select.Width, R(menu) + " vs " + R(select));
+                Element banana = menu.children[1];
+                Click(ui, CenterX(ui, banana), CenterY(ui, banana));
+                Check("select: choosing sets the value and closes", fruit.Peek() == "Banana" && ui.overlayRoot.children.Count == 0
+                    && !select.HasClass("open"));
+                Click(ui, CenterX(ui, select), CenterY(ui, select));
+                Click(ui, 590, 790);
+                Check("select: a press elsewhere closes", ui.overlayRoot.children.Count == 0 && fruit.Peek() == "Banana");
+
+                dialogOpen.Value = true;
+                Refresh(ui);
+                Element backdrop = ui.overlayRoot.children.Count == 1 ? ui.overlayRoot.children[0] : null;
+                Check("dialog: opens on the overlay, centered", backdrop != null && backdrop.Width == 600
+                    && backdrop.children[0].X == (600 - backdrop.children[0].Width) / 2, backdrop != null ? R(backdrop.children[0]) : "");
+                Click(ui, 300, 400);
+                Check("dialog: a click inside keeps it open", dialogOpen.Peek());
+                Click(ui, 10, 10);
+                Check("dialog: a click on the backdrop closes it", !dialogOpen.Peek() && ui.overlayRoot.children.Count == 0);
+
+                ui.Toast("Hello", 1f);
+                Refresh(ui);
+                Element stack = ui.overlayRoot.children.Count > 0 ? ui.overlayRoot.children[ui.overlayRoot.children.Count - 1] : null;
+                Check("toast: shown", stack != null && stack.tag == "toast-stack" && stack.children[0].children.Count == 1);
+                Frames(ui, 70);
+                Check("toast: gone after its time", stack.children[0].children.Count == 0);
+
+                ui.SetTheme(Theme.Dark);
+                Refresh(ui);
+                Check("theme: existing components restyle", button.computed.ColorOf(StyleProperty.Background) == Theme.Dark.Accent
+                    && inBlock.computed.ColorOf(StyleProperty.Background) == Theme.Dark.Surface);
+                var themeSeen = Theme.Light.Background;
+                ui.Effect(() => themeSeen = ui.Theme.Background);
+                ui.SetTheme(Theme.Light);
+                Check("theme: bindings follow SetTheme", themeSeen == Theme.Light.Background);
+
+                Box helped = ui.Div().Size(40, 20).Background(Colors.Black).Tooltip("Help");
+                ui.root.children[0].AppendChild(helped);
+                Refresh(ui);
+                int overlaysBefore = ui.overlayRoot.children.Count;
+                Pointer(ui, CenterX(ui, helped), CenterY(ui, helped), false);
+                Frames(ui, 10);
+                Check("tooltip: not yet", ui.overlayRoot.children.Count == overlaysBefore);
+                Frames(ui, 30);
+                Check("tooltip: shown after resting", ui.overlayRoot.children.Count == overlaysBefore + 1);
+                Pointer(ui, 590, 10, false);
+                Check("tooltip: hidden when the pointer leaves", ui.overlayRoot.children.Count == overlaysBefore);
+            }
+
+            // ---- pointer positions inside scrolled content ----
+            {
+                var ui = NewContext(1f, 300, 200);
+                var state = ui.ScrollState();
+                var value = ui.Signal(0f);
+                Box slider = ui.Slider(value, 0f, 100f).Width(200);
+                ScrollView view = ui.ScrollView(state, ScrollAxis.Horizontal).Size(300, 200).Flex().Row().AlignItems(Align.Start);
+                view.Children(ui.Div().Width(100).FlexShrink(0), slider.FlexShrink(0), ui.Div().Width(400).FlexShrink(0));
+                Layout(ui, view);
+                state.ScrollTo(80f, 0f);
+                Refresh(ui);
+                float screenX = slider.X + ui.groups.offsets[slider.group].x;
+                Click(ui, screenX + 60, CenterY(ui, slider));
+                Check("scrolled content: local pointer positions include the scroll", Mathf.Abs(value.Peek() - 30f) < 0.5f
+                    && screenX < slider.X, $"value {value.Peek()} at x {screenX} (layout x {slider.X})");
             }
 
             Console.WriteLine(failures == 0 ? "ALL PASSED" : failures + " FAILED");

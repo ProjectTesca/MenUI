@@ -60,6 +60,17 @@ namespace MenUI
             return this;
         }
 
+        /// Removes every rule (elements keep what they matched until matched again).
+        internal void Clear()
+        {
+            rules.Clear();
+            byClass.Clear();
+            byTag.Clear();
+            universal.Clear();
+            ancestorClasses.Clear();
+            hasAncestorTags = false;
+        }
+
         private void Index(StyleRule rule)
         {
             Compound subject = rule.compounds[rule.compounds.Length - 1];

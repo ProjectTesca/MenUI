@@ -51,7 +51,10 @@ namespace MenUI
         /// sheet, so every rule of yours wins over it. Components add their
         /// rules when first used.
         internal readonly StyleSheet defaultSheet = new StyleSheet();
-        private bool textBoxStylesAdded;
+        // Which components' rules it holds (ComponentStyles bits), and their colors.
+        private int componentStyles;
+        private Theme theme = MenUI.Theme.Light;
+        private Signal<Theme> themeSignal;
         internal int reconcileStamp;
         /// The set or order of records changes: repaint everything.
         internal bool paintStructureDirty = true;
@@ -100,6 +103,7 @@ namespace MenUI
             textInput = new TextInputCoordinator(this);
             groups = new TransformGroups(bufferWidth, bufferHeight);
             layoutTick = new Signal<int>(runtime, 0);
+            themeSignal = new Signal<Theme>(runtime, theme);
             for (int i = 0; i < samples.Length; i++)
             {
                 samples[i] = new PointerSample();
@@ -124,6 +128,10 @@ namespace MenUI
             root = new Box(this);
             overlayRoot = new Box(this);
             overlayRoot.inlineStyle.SetEnum(StyleProperty.PointerEvents, (int)PointerEventsMode.None);
+            // CSS's initial font size, 16 logical pixels (the computed default
+            // is physical): what everything inherits unless styled.
+            root.FontSize(16f);
+            overlayRoot.FontSize(16f);
             root.MarkStyleDirty();
             overlayRoot.MarkStyleDirty();
             AddStyleSheet(defaultSheet);
@@ -418,21 +426,45 @@ namespace MenUI
             return new TextBox(this, value, true);
         }
 
-        internal void EnsureTextBoxStyles()
+        // ---- theme ----------------------------------------------------------------------
+
+        /// The colors of the built-in components (see Theme). Reading it in a
+        /// binding follows SetTheme: `.Background(() => UI.Theme.Background)`.
+        public Theme Theme { get { return themeSignal.Value; } }
+
+        /// Changes the built-in components' look, including those already built.
+        public void SetTheme(Theme value)
         {
-            if (textBoxStylesAdded)
+            if (value == null)
             {
                 return;
             }
-            textBoxStylesAdded = true;
-            Color accent = Colors.Hex(0x0969DA);
-            defaultSheet
-                .Rule("input, textarea", s => s.Padding(6, 10).Background(Colors.White).TextColor(Colors.Hex(0x1F2328))
-                    .Border(1, Colors.Hex(0xD0D7DE)).BorderRadius(6))
-                .Rule("input:hover, textarea:hover", s => s.BorderColor(Colors.Hex(0x8C959F)))
-                .Rule("input:focus, textarea:focus", s => s.BorderColor(accent)
-                    .BoxShadow(new Shadow(0f, 0f, 0f, 3f, new Color(accent.r, accent.g, accent.b, 0.3f))))
-                .Rule("input:disabled, textarea:disabled", s => s.Opacity(0.5f));
+            theme = value;
+            themeSignal.Value = value;
+            defaultSheet.Clear();
+            for (int kind = 1; kind <= ComponentStyles.Last; kind <<= 1)
+            {
+                if ((componentStyles & kind) != 0)
+                {
+                    ComponentStyles.Add(defaultSheet, theme, kind);
+                }
+            }
+            // Every element matches again (the rules are new objects).
+            root.subtreeStyleDirty = true;
+            root.MarkStyleDirty();
+            overlayRoot.subtreeStyleDirty = true;
+            overlayRoot.MarkStyleDirty();
+        }
+
+        /// Adds a component's rules to the built-in sheet the first time it is built.
+        internal void EnsureStyles(int kind)
+        {
+            if ((componentStyles & kind) != 0)
+            {
+                return;
+            }
+            componentStyles |= kind;
+            ComponentStyles.Add(defaultSheet, theme, kind);
         }
 
         public Signal<T> Signal<T>(T initial)
@@ -553,6 +585,139 @@ namespace MenUI
                 owner.OnCleanup(() => overlayRoot.RemoveChild(built));
             }
             return placeholder;
+        }
+
+        // ---- components (see Components/) ----------------------------------------------
+
+        /// A button (tag `button`) with a text label. Add `.OnClick(...)`.
+        public Box Button(string label, ButtonVariant variant = ButtonVariant.Secondary)
+        {
+            return Controls.Button(this, Text(label), variant);
+        }
+
+        /// A button with any content (an icon and a label, ...).
+        public Box Button(Element content, ButtonVariant variant = ButtonVariant.Secondary)
+        {
+            return Controls.Button(this, content, variant);
+        }
+
+        /// A check box with an optional label; clicking either toggles `isChecked`.
+        public Box Checkbox(Signal<bool> isChecked, string label = null)
+        {
+            return Controls.Checkbox(this, isChecked, label);
+        }
+
+        /// An on/off switch with an optional label.
+        public Box Switch(Signal<bool> isOn, string label = null)
+        {
+            return Controls.Switch(this, isOn, label);
+        }
+
+        /// One radio button: selected while `selected` equals `value`, and
+        /// clicking it sets that. Several with the same signal form a group.
+        public Box Radio<T>(Signal<T> selected, T value, string label = null)
+        {
+            return Controls.Radio(this, selected, value, label);
+        }
+
+        /// A slider from `minimum` to `maximum` (`step` 0: continuous).
+        public Box Slider(Signal<float> value, float minimum = 0f, float maximum = 1f, float step = 0f)
+        {
+            return Controls.Slider(this, value, minimum, maximum, step);
+        }
+
+        /// A bar filled to `progress` (0 to 1).
+        public Box ProgressBar(Func<float> progress)
+        {
+            return Controls.ProgressBar(this, progress);
+        }
+
+        /// Three pulsing dots, for "working on it" (animates while shown).
+        public Box Spinner()
+        {
+            return Controls.Spinner(this);
+        }
+
+        /// A row of tabs; `selected` is the index of the current one. Show
+        /// the matching content yourself (`Dynamic(() => ...)`).
+        public Box Tabs(Signal<int> selected, params string[] labels)
+        {
+            return Controls.Tabs(this, selected, labels);
+        }
+
+        /// A thin horizontal line.
+        public Box Divider()
+        {
+            return Controls.Divider(this);
+        }
+
+        /// A drop-down list: shows `label(selected)`, and a menu of `options`
+        /// on click.
+        public Box Select<T>(Signal<T> selected, List<T> options, Func<T, string> label)
+        {
+            return Popups.Select(this, selected, options, label);
+        }
+
+        /// A drop-down list of strings.
+        public Box Select(Signal<string> selected, params string[] options)
+        {
+            return Popups.Select(this, selected, new List<string>(options), text => text);
+        }
+
+        /// A modal dialog with `content`, shown while `open` is true; clicking
+        /// the dimmed backdrop closes it (unless `closeOnBackdrop` is false).
+        /// The returned region can go anywhere in the tree, or nowhere.
+        public Region Dialog(Signal<bool> open, Func<Element> content, bool closeOnBackdrop = true)
+        {
+            return Popups.Dialog(this, open, content, closeOnBackdrop);
+        }
+
+        /// Shows `message` at the bottom of the panel for `seconds`.
+        public void Toast(string message, float seconds = 3f)
+        {
+            if (toasts == null)
+            {
+                EnsureStyles(ComponentStyles.Toast);
+                toasts = new Signal<List<ToastMessage>>(runtime, new List<ToastMessage>());
+                runtime.RunWithOwner(runtime.root, () =>
+                {
+                    Overlay(() => Div().Tag("toast-stack").Child(
+                        For(() => toasts.Value, item => item.id,
+                            (item, index) => Div().Tag("toast").Child(Text(item.Peek().text)))));
+                });
+            }
+            ToastMessage toast = new ToastMessage(++lastToastId, message);
+            List<ToastMessage> shown = new List<ToastMessage>(toasts.Peek());
+            shown.Add(toast);
+            toasts.Value = shown;
+            After(seconds, () =>
+            {
+                List<ToastMessage> remaining = new List<ToastMessage>(toasts.Peek());
+                remaining.Remove(toast);
+                toasts.Value = remaining;
+            });
+        }
+
+        private Signal<List<ToastMessage>> toasts;
+        private int lastToastId;
+
+        /// Runs `action` once after `seconds` (cancel with the result).
+        internal Delay After(float seconds, Action action)
+        {
+            Delay delay = new Delay(this, seconds, action);
+            StartAnimating(delay);
+            return delay;
+        }
+
+        /// Where an element is on the panel now, in logical pixels (its
+        /// layout box moved by scrolling and translation).
+        internal void LogicalRect(Element e, out float left, out float top, out float width, out float height)
+        {
+            Vector4 offset = groups.offsets[e.group];
+            left = (e.x + offset.x) / scale;
+            top = (e.y + offset.y) / scale;
+            width = e.width / scale;
+            height = e.height / scale;
         }
 
         // ---- scrolling ---------------------------------------------------------------

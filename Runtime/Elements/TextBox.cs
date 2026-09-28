@@ -48,7 +48,7 @@ namespace MenUI
             this.multiLine = multiLine;
             tag = multiLine ? "textarea" : "input";
             target = new TextInputTarget(this);
-            context.EnsureTextBoxStyles();
+            context.EnsureStyles(ComponentStyles.TextBox);
             context.Bind(() => Show(value.Value));
         }
 

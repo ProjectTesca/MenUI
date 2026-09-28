@@ -307,7 +307,10 @@ namespace MenUI
                 }
             }
 
-            if (background.a > 0f || (hasBorder && !hasInset))
+            // An element whose look follows a state (a hover background) keeps
+            // its record while transparent, so the state change rewrites that
+            // record instead of changing the record count (a full paint).
+            if (background.a > 0f || (hasBorder && !hasInset) || HasStateStyles(e))
             {
                 int record = Begin(e, x, y, width, height);
                 if (record >= 0)
@@ -354,6 +357,12 @@ namespace MenUI
                     }
                 }
             }
+        }
+
+        private static bool HasStateStyles(Element e)
+        {
+            return e.stateRuleMask != 0 || e.hoverStyle != null || e.activeStyle != null || e.focusStyle != null
+                || e.disabledStyle != null || e.draggingStyle != null || e.dragOverStyle != null;
         }
 
         // ================================================================

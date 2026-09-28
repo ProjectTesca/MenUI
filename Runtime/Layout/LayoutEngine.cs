@@ -256,7 +256,7 @@ namespace MenUI
             {
                 width = ClampWidth(s, width, boxWidth);
             }
-            if (width < 0 && hasLeft && hasRight)
+            if (width < 0 && hasLeft && hasRight && s.Unit(StyleProperty.Width) != (int)LengthUnit.FitContent)
             {
                 width = ClampWidth(s, Mathf.Max(0, boxWidth - left - right - marginLeft - marginRight), boxWidth);
             }
@@ -265,7 +265,7 @@ namespace MenUI
             {
                 height = ClampHeight(s, height, boxHeight);
             }
-            if (height < 0 && hasTop && hasBottom)
+            if (height < 0 && hasTop && hasBottom && s.Unit(StyleProperty.Height) != (int)LengthUnit.FitContent)
             {
                 height = ClampHeight(s, Mathf.Max(0, boxHeight - top - bottom - marginTop - marginBottom), boxHeight);
             }
@@ -594,7 +594,8 @@ namespace MenUI
                     self = alignItems;
                 }
                 int crossProperty = isRow ? StyleProperty.Height : StyleProperty.Width;
-                stretch[i] = self == Align.Stretch && c.Resolve(crossProperty, crossReference, -1) < 0;
+                stretch[i] = self == Align.Stretch && c.Resolve(crossProperty, crossReference, -1) < 0
+                    && c.Unit(crossProperty) != (int)LengthUnit.FitContent;
 
                 int mainProperty = isRow ? StyleProperty.Width : StyleProperty.Height;
                 int basis = isFlex ? c.Resolve(StyleProperty.FlexBasis, mainReference, -1) : -1;

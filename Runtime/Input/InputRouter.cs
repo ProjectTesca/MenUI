@@ -582,13 +582,25 @@ namespace MenUI
             pointerEvent.PointerId = slotPointerId[slot];
             pointerEvent.X = x / scale;
             pointerEvent.Y = y / scale;
-            pointerEvent.LocalX = current != null ? (x - current.x) / scale : 0f;
-            pointerEvent.LocalY = current != null ? (y - current.y) / scale : 0f;
+            pointerEvent.LocalX = current != null ? (x - ScreenX(current)) / scale : 0f;
+            pointerEvent.LocalY = current != null ? (y - ScreenY(current)) / scale : 0f;
             pointerEvent.Target = eventTarget;
             pointerEvent.CurrentTarget = current;
             pointerEvent.ScrollDelta = 0f;
             pointerEvent.propagationStopped = false;
             pointerEvent.clickCancelled = false;
+        }
+
+        // Where an element is on the panel (physical px): its layout position
+        // moved by its transform group (scrolling, translation).
+        private float ScreenX(Element e)
+        {
+            return e.x + context.groups.offsets[e.group].x;
+        }
+
+        private float ScreenY(Element e)
+        {
+            return e.y + context.groups.offsets[e.group].y;
         }
 
         private static Element ScrollViewAbove(Element e)
@@ -735,8 +747,8 @@ namespace MenUI
             pointerEvent.PointerId = slotPointerId[slot];
             pointerEvent.X = x / scale;
             pointerEvent.Y = y / scale;
-            pointerEvent.LocalX = (x - e.x) / scale;
-            pointerEvent.LocalY = (y - e.y) / scale;
+            pointerEvent.LocalX = (x - ScreenX(e)) / scale;
+            pointerEvent.LocalY = (y - ScreenY(e)) / scale;
             pointerEvent.Target = eventTarget;
             pointerEvent.CurrentTarget = e;
             pointerEvent.ScrollDelta = scroll;

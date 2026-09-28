@@ -29,6 +29,21 @@ namespace MenUI
         protected Region Overlay(Func<Element> content) { return context.Overlay(content); }
         protected Element Mount(Component component) { return context.Mount(component); }
         protected void AddStyleSheet(StyleSheet sheet) { context.AddStyleSheet(sheet); }
+        protected Box Button(string label, ButtonVariant variant = ButtonVariant.Secondary) { return context.Button(label, variant); }
+        protected Box Button(Element content, ButtonVariant variant = ButtonVariant.Secondary) { return context.Button(content, variant); }
+        protected Box Checkbox(Signal<bool> isChecked, string label = null) { return context.Checkbox(isChecked, label); }
+        protected Box Switch(Signal<bool> isOn, string label = null) { return context.Switch(isOn, label); }
+        protected Box Radio<T>(Signal<T> selected, T value, string label = null) { return context.Radio(selected, value, label); }
+        protected Box Slider(Signal<float> value, float minimum = 0f, float maximum = 1f, float step = 0f) { return context.Slider(value, minimum, maximum, step); }
+        protected Box ProgressBar(Func<float> progress) { return context.ProgressBar(progress); }
+        protected Box Spinner() { return context.Spinner(); }
+        protected Box Tabs(Signal<int> selected, params string[] labels) { return context.Tabs(selected, labels); }
+        protected Box Divider() { return context.Divider(); }
+        protected Box Select<T>(Signal<T> selected, List<T> options, Func<T, string> label) { return context.Select(selected, options, label); }
+        protected Box Select(Signal<string> selected, params string[] options) { return context.Select(selected, options); }
+        protected Region Dialog(Signal<bool> open, Func<Element> content, bool closeOnBackdrop = true) { return context.Dialog(open, content, closeOnBackdrop); }
+        protected void Toast(string message, float seconds = 3f) { context.Toast(message, seconds); }
+        protected void SetTheme(Theme theme) { context.SetTheme(theme); }
         protected ScrollState ScrollState() { return context.ScrollState(); }
         protected ScrollView ScrollView(ScrollState state, ScrollAxis axis = ScrollAxis.Vertical) { return context.ScrollView(state, axis); }
         protected Box Scrollbar(ScrollState state, ScrollAxis axis = ScrollAxis.Vertical) { return context.Scrollbar(state, axis); }

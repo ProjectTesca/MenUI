@@ -45,6 +45,32 @@ renderer, text shaping) is set up automatically.
 - **Text boxes** — `TextBox` / `TextArea` bound to a `Signal<string>`, typed
   through VRChat's own input UI (desktop window or VR keyboard, IME included)
   behind `ITextInputHost`.
+- **Components** — buttons, check boxes, switches, radio buttons, sliders,
+  progress bars, spinners, tabs, selects, dialogs, tooltips and toasts, with
+  light and dark themes.
+
+## Components
+
+```csharp
+Button("Save", ButtonVariant.Primary).OnClick(Save);   // Secondary, Danger, Ghost
+Checkbox(agreed, "I agree");
+Switch(muted, "Mute");
+Radio(quality, Quality.High, "High");                  // same signal: one group
+Slider(volume, 0f, 1f);                                // step optional
+ProgressBar(() => loaded.Value / total);
+Tabs(page, "General", "Audio");                        // show the page with Dynamic
+Select(fruit, "Apple", "Banana");                      // or Select(value, list, label)
+Dialog(open, () => Div().Children(...));
+Button("?").Tooltip("Help");
+Toast("Saved");
+SetTheme(Theme.Dark);                                  // or a Theme of your own
+```
+
+Each control is plain elements with tags (`button`, `checkbox`, `switch`,
+`radio`, `slider`, `select`, `tab`, `dialog`, ...), so style sheets restyle
+them; MenUI's own rules are the lowest, like a browser's defaults. Values
+live in your signals. `.Disabled(() => ...)` works on all of them.
+`Length.FitContent` (CSS `width: fit-content`) keeps buttons from stretching.
 
 ## Text boxes
 
@@ -78,8 +104,8 @@ sheet.Rule(".title", s => s.FontFamily("M PLUS Rounded, Noto Sans JP"));
 ## Samples
 
 Package Manager › MenUI › Samples › **Demos**: a CSS tour, scrolling with a
-10,000-row virtual list, a drag-and-drop kanban board, and a form with text
-boxes.
+10,000-row virtual list, a drag-and-drop kanban board, a form with text
+boxes, and every built-in component with a theme switch.
 
 ## Developing MenUI
 

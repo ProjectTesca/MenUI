@@ -250,6 +250,21 @@ namespace MenUI
         protected Region Overlay(Func<Element> content) { return ui.Overlay(content); }
         protected Element Mount(Component component) { return ui.Mount(component); }
         protected void AddStyleSheet(StyleSheet sheet) { ui.AddStyleSheet(sheet); }
+        protected Box Button(string label, ButtonVariant variant = ButtonVariant.Secondary) { return ui.Button(label, variant); }
+        protected Box Button(Element content, ButtonVariant variant = ButtonVariant.Secondary) { return ui.Button(content, variant); }
+        protected Box Checkbox(Signal<bool> isChecked, string label = null) { return ui.Checkbox(isChecked, label); }
+        protected Box Switch(Signal<bool> isOn, string label = null) { return ui.Switch(isOn, label); }
+        protected Box Radio<T>(Signal<T> selected, T value, string label = null) { return ui.Radio(selected, value, label); }
+        protected Box Slider(Signal<float> value, float minimum = 0f, float maximum = 1f, float step = 0f) { return ui.Slider(value, minimum, maximum, step); }
+        protected Box ProgressBar(Func<float> progress) { return ui.ProgressBar(progress); }
+        protected Box Spinner() { return ui.Spinner(); }
+        protected Box Tabs(Signal<int> selected, params string[] labels) { return ui.Tabs(selected, labels); }
+        protected Box Divider() { return ui.Divider(); }
+        protected Box Select<T>(Signal<T> selected, List<T> options, Func<T, string> label) { return ui.Select(selected, options, label); }
+        protected Box Select(Signal<string> selected, params string[] options) { return ui.Select(selected, options); }
+        protected Region Dialog(Signal<bool> open, Func<Element> content, bool closeOnBackdrop = true) { return ui.Dialog(open, content, closeOnBackdrop); }
+        protected void Toast(string message, float seconds = 3f) { ui.Toast(message, seconds); }
+        protected void SetTheme(Theme theme) { ui.SetTheme(theme); }
         protected ScrollState ScrollState() { return ui.ScrollState(); }
         protected ScrollView ScrollView(ScrollState state, ScrollAxis axis = ScrollAxis.Vertical) { return ui.ScrollView(state, axis); }
         protected Box Scrollbar(ScrollState state, ScrollAxis axis = ScrollAxis.Vertical) { return ui.Scrollbar(state, axis); }

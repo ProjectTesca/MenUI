@@ -3,7 +3,7 @@
   "displayName": "MenUI",
   "version": "0.1.0",
   "unity": "2022.3",
-  "description": "A modern UI library for VRChat worlds, written in MenSharp: CSS-like styling, flexbox layout, fine-grained reactivity, style sheets, scrolling, virtual lists and drag and drop, drawn by the GPU into a single texture.",
+  "description": "A modern UI library for VRChat worlds, written in MenSharp: CSS-like styling, flexbox layout, fine-grained reactivity, style sheets, scrolling, virtual lists, drag and drop, text boxes and built-in components, drawn by the GPU into a single texture.",
   "author": { "name": "bea4dev" },
   "vpmDependencies": {
     "io.tesca.mensharp": "^0.1.4",
@@ -12,7 +12,7 @@
   "samples": [
     {
       "displayName": "Demos",
-      "description": "A CSS tour (layout, borders, shadows, z-index, style sheets, buttons), scrolling with a 10,000-row virtual list, and a drag-and-drop kanban board.",
+      "description": "A CSS tour (layout, borders, shadows, z-index, style sheets, buttons), scrolling with a 10,000-row virtual list, a drag-and-drop kanban board, a form with text boxes, and the built-in components with a theme switch.",
       "path": "Samples~/Demos"
     }
   ]

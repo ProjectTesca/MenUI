@@ -1,3 +1,5 @@
+using UnityEngine;
+
 namespace MenUI
 {
     /// A run of text. It is a box of its own (like a `p` or `span` with
@@ -34,6 +36,14 @@ namespace MenUI
         internal override void MeasureContent(int availableWidth, out int contentWidth, out int contentHeight)
         {
             float fontSize = computed.FontSize;
+            if (context.shapers == null)
+            {
+                // Headless tests have no fonts: half an em per character, one line.
+                contentWidth = Mathf.CeilToInt(content.Length * fontSize * 0.5f);
+                if (availableWidth >= 0 && contentWidth > availableWidth) contentWidth = availableWidth;
+                contentHeight = Mathf.CeilToInt(fontSize * 1.45f);
+                return;
+            }
             context.ShaperFor(computed.FontIndex).Shape(maxContent, content, fontSize, -1, TextAlignMode.Start);
             if (availableWidth < 0 || maxContent.width <= availableWidth)
             {
@@ -51,6 +61,10 @@ namespace MenUI
         /// Approximated by shaping the run with the most characters.
         internal override int MinContentWidthOfContent()
         {
+            if (context.shapers == null)
+            {
+                return 0;
+            }
             string text = content;
             int bestStart = 0, bestLength = 0;
             int runStart = 0;
@@ -95,6 +109,10 @@ namespace MenUI
 
         internal override void ArrangeContent(int contentWidth, int contentHeight)
         {
+            if (context.shapers == null)
+            {
+                return;
+            }
             float fontSize = computed.FontSize;
             TextAlignMode align = computed.TextAlign;
             context.ShaperFor(computed.FontIndex).Shape(maxContent, content, fontSize, -1, TextAlignMode.Start);

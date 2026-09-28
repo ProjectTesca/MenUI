@@ -36,7 +36,7 @@ namespace MenUI
     public enum PointerEventsMode { Auto, None }
 
     /// How a length is expressed.
-    public enum LengthUnit { Auto = 0, Pixels = 1, Percent = 2, None = 3 }
+    public enum LengthUnit { Auto = 0, Pixels = 1, Percent = 2, None = 3, FitContent = 4 }
 
     /// A CSS length: logical pixels (fractions allowed), a percentage of the
     /// containing box, or `auto`. A plain number converts to pixels:
@@ -55,6 +55,10 @@ namespace MenUI
         public static Length Pixels(float value) { return new Length(LengthUnit.Pixels, value); }
         public static Length Percent(float value) { return new Length(LengthUnit.Percent, value); }
         public static Length Auto { get { return new Length(LengthUnit.Auto, 0f); } }
+        /// `fit-content`, for `width` / `height`: as wide as the content wants
+        /// (never more than the space there is), even where `auto` would
+        /// stretch — in a block container or a stretching flex line.
+        public static Length FitContent { get { return new Length(LengthUnit.FitContent, 0f); } }
         /// `none`, for `max-width` / `max-height`.
         public static Length None { get { return new Length(LengthUnit.None, 0f); } }
 
