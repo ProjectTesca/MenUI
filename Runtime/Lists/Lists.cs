@@ -4,7 +4,8 @@
 // while it stays in the list — it is moved, not rebuilt; a new key builds an
 // element; a key that left has its element's bindings disposed. The builder
 // gets the item and its index as signals, so an item replaced under the same
-// key (a record changed with `with`) updates in place.
+// key (a record changed with `with`) updates in place. A removed element
+// with an `:exit-to` style stays where it was until its exit has played.
 //
 //   For(() => todos.Value, t => t.Id, (item, index) =>
 //       Text(() => $"{index.Value + 1}. {item.Value.Title}"))
@@ -43,6 +44,8 @@ namespace MenUI
         private readonly Dictionary<K, ListEntry<T>> entries = new Dictionary<K, ListEntry<T>>();
         private readonly List<Element> order = new List<Element>();
         private readonly List<K> gone = new List<K>();
+        // Removed entries still playing their exit.
+        private readonly List<ListEntry<T>> exiting = new List<ListEntry<T>>();
         private int stamp;
 
         internal KeyedList(MenUIContext context, Region region, Owner scope, Func<List<T>> items, Func<T, K> key,
@@ -105,8 +108,36 @@ namespace MenUI
             }
             for (int i = 0; i < gone.Count; i++)
             {
-                entries[gone[i]].owner.Dispose();
+                ListEntry<T> leaving = entries[gone[i]];
                 entries.Remove(gone[i]);
+                if (leaving.element == null)
+                {
+                    leaving.owner.Dispose();
+                    continue;
+                }
+                if (context.Leave(leaving.owner, () =>
+                    {
+                        exiting.Remove(leaving);
+                        region.RemoveChild(leaving.element);
+                    }))
+                {
+                    exiting.Add(leaving);
+                }
+            }
+            // Exiting elements keep their place among the others (placed in
+            // the order they are shown, so earlier indices stay right).
+            List<Element> children = region.children;
+            for (int i = 0; i < children.Count; i++)
+            {
+                Element child = children[i];
+                for (int j = 0; j < exiting.Count; j++)
+                {
+                    if (exiting[j].element == child)
+                    {
+                        order.Insert(Mathf.Min(i, order.Count), child);
+                        break;
+                    }
+                }
             }
             region.ReplaceChildren(order);
         }

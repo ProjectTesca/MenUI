@@ -74,7 +74,7 @@ namespace MenUI
             }
 
             // A press anywhere else closes it (and does nothing else).
-            Box layer = ui.Div().Absolute().Inset(0).PointerEvents(PointerEventsMode.Auto).Child(menu);
+            Box layer = ui.Div().Tag("select-layer").Child(menu);
             layer.OnPointerDown(e =>
             {
                 if (e.Target == layer)

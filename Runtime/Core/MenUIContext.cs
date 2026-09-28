@@ -30,9 +30,16 @@ namespace MenUI
         internal readonly LayoutEngine layout = new LayoutEngine();
         internal readonly Painter painter;
 
-        internal readonly float scale;
-        internal readonly int bufferWidth;
-        internal readonly int bufferHeight;
+        // Physical pixels per logical pixel, and the panel in physical pixels
+        // (changed only by Resize).
+        internal float scale;
+        internal int bufferWidth;
+        internal int bufferHeight;
+        private Signal<float> scaleSignal;
+
+        /// The scale, read so that a binding reruns when Resize changes it
+        /// (bindings that turn logical pixels into physical ones).
+        internal float TrackedScale { get { return scaleSignal.Value; } }
 
         internal readonly Box root;
         internal readonly Box overlayRoot;
@@ -79,6 +86,9 @@ namespace MenUI
         /// Virtual list rows given new content this frame (diagnostics).
         internal int rowsFilled;
         private readonly List<IFrameTask> animating = new List<IFrameTask>();
+        private readonly Action tickTasks;
+        private float tickSeconds;
+        internal readonly StyleAnimations styleAnimations;
         /// Bumped after every layout, for bindings that read laid-out sizes
         /// (a scrollbar thumb's travel).
         internal readonly Signal<int> layoutTick;
@@ -101,9 +111,12 @@ namespace MenUI
             }
             router = new InputRouter(this);
             textInput = new TextInputCoordinator(this);
+            styleAnimations = new StyleAnimations(this);
+            tickTasks = () => TickTasks();
             groups = new TransformGroups(bufferWidth, bufferHeight);
             layoutTick = new Signal<int>(runtime, 0);
             themeSignal = new Signal<Theme>(runtime, theme);
+            scaleSignal = new Signal<float>(runtime, scale);
             for (int i = 0; i < samples.Length; i++)
             {
                 samples[i] = new PointerSample();
@@ -148,6 +161,66 @@ namespace MenUI
             if (source != null && surface != null)
             {
                 source.Attach(surface);
+            }
+        }
+
+        /// Changes the panel's size (physical pixels) and scale (physical
+        /// pixels per logical pixel) while it runs: everything is styled, laid
+        /// out and drawn again at the new size — cheap enough to animate. A
+        /// larger scale draws the same logical layout with more pixels (zoom);
+        /// a larger size gives the layout more logical room.
+        public void Resize(int width, int height, float newScale)
+        {
+            width = Mathf.Clamp(width, 16, 8192);
+            height = Mathf.Clamp(height, 16, 8192);
+            newScale = Mathf.Clamp(newScale, 0.25f, 8f);
+            if (width == bufferWidth && height == bufferHeight && newScale == scale)
+            {
+                return;
+            }
+            bufferWidth = width;
+            bufferHeight = height;
+            scale = newScale;
+            scaleSignal.Value = newScale;
+            if (renderer != null)
+            {
+                renderer.Resize(width, height);
+            }
+            groups.SetPanelSize(width, height);
+            if (surface != null)
+            {
+                surface.LogicalWidth = LogicalWidth;
+                surface.LogicalHeight = LogicalHeight;
+                if (textInput.host != null)
+                {
+                    textInput.host.Attach(surface);   // fits its canvas to the new logical size
+                }
+            }
+            // Pixel snapping depends on the scale: resolve every style again,
+            // and lay everything out afresh (no measurement is valid any more).
+            root.subtreeStyleDirty = true;
+            root.MarkStyleDirty();
+            overlayRoot.subtreeStyleDirty = true;
+            overlayRoot.MarkStyleDirty();
+            int pass = layout.NextPass;
+            InvalidateLayout(root, pass);
+            InvalidateLayout(overlayRoot, pass);
+            root.MarkLayoutDirty(false);
+            overlayRoot.MarkLayoutDirty(false);
+            paintStructureDirty = true;
+            needsPaint = true;
+            hitVersion++;
+        }
+
+        private static void InvalidateLayout(Element e, int pass)
+        {
+            e.layoutDirty = true;
+            e.savedAnswerCount = -1;
+            e.validSincePass = pass;
+            e.measureOverflowed = false;
+            for (int i = 0; i < e.children.Count; i++)
+            {
+                InvalidateLayout(e.children[i], pass);
             }
         }
 
@@ -288,20 +361,43 @@ namespace MenUI
             resolver.ResolveQueue(this);
         }
 
-        /// Advances time-based work (scroll momentum); call once a frame
-        /// before input.
+        /// Advances time-based work (animations, scroll momentum); call once
+        /// a frame before input. What the tasks change takes effect together
+        /// (one batch): each binding reruns at most once per frame.
         internal void Tick(float seconds)
         {
             time += seconds;
             frame++;
             rowsFilled = 0;
+            tickSeconds = seconds;
+            runtime.Batch(tickTasks);
+        }
+
+        private void TickTasks()
+        {
+            // Backwards: tasks started meanwhile are appended and wait a frame.
             for (int i = animating.Count - 1; i >= 0; i--)
             {
-                if (!animating[i].Tick(seconds))
+                if (i >= animating.Count)
+                {
+                    continue;
+                }
+                if (!animating[i].Tick(tickSeconds))
                 {
                     animating.RemoveAt(i);
                 }
             }
+        }
+
+        /// Whether `e` is in the panel's tree (or the overlay's).
+        internal bool IsAttached(Element e)
+        {
+            Element top = e;
+            while (top.parent != null)
+            {
+                top = top.parent;
+            }
+            return top == root || top == overlayRoot;
         }
 
         /// Runs `task` every frame (before input) until it reports done.
@@ -489,6 +585,39 @@ namespace MenUI
             runtime.Batch(action);
         }
 
+        // ---- animation (see Animation/) ----------------------------------------------
+
+        /// A number that animates: `.AnimateTo(target, animation)`, read `.Value`
+        /// in bindings.
+        public AnimatedFloat Animated(float initial)
+        {
+            return new AnimatedFloat(this, initial);
+        }
+
+        /// A color that animates.
+        public AnimatedColor Animated(Color initial)
+        {
+            return new AnimatedColor(this, initial);
+        }
+
+        /// Calls `frame` every frame for `seconds` with the progress (0 → 1,
+        /// eased), ending with 1; then `onComplete`.
+        public Playback Animate(float seconds, Action<float> frame, Easing easing = null, Action onComplete = null)
+        {
+            Playback playback = new Playback(this, Mathf.Max(0f, seconds), easing, frame, onComplete);
+            StartAnimating(playback);
+            return playback;
+        }
+
+        /// Calls `tick` every frame (with the seconds since the last one)
+        /// until stopped, or until the scope that called this goes away.
+        public Playback EveryFrame(Action<float> tick)
+        {
+            Playback playback = new Playback(this, -1f, null, tick, null);
+            StartAnimating(playback);
+            return playback;
+        }
+
         public T Untrack<T>(Func<T> read)
         {
             return runtime.Untrack(read);
@@ -507,7 +636,8 @@ namespace MenUI
 
         /// Shows `then` while `condition` is true, `otherwise` (if any) while
         /// it is false. A branch is built once per switch; its bindings stop
-        /// when it is removed.
+        /// when it is removed. A removed branch with `:exit-to` styles plays
+        /// its exit first (the new branch is already there meanwhile).
         public Region Show(Func<bool> condition, Func<Element> then, Func<Element> otherwise = null)
         {
             Region region = new Region(this);
@@ -515,6 +645,7 @@ namespace MenUI
             bool initialized = false;
             bool last = false;
             Owner branch = null;
+            Element shown = null;
             Effect watcher = new Effect(runtime, scope, () =>
             {
                 bool value = condition();
@@ -524,22 +655,63 @@ namespace MenUI
                 }
                 initialized = true;
                 last = value;
-                branch = SwapBranch(region, scope, branch, value ? then : otherwise);
+                if (branch != null)
+                {
+                    Element leaving = shown;
+                    Leave(branch, () => region.RemoveChild(leaving));
+                }
+                branch = null;
+                shown = null;
+                Func<Element> build = value ? then : otherwise;
+                if (build != null)
+                {
+                    Owner owner = new Owner(runtime, scope);
+                    Element built = null;
+                    runtime.RunWithOwner(owner, () => { built = build(); });
+                    branch = owner;
+                    shown = built;
+                    if (built != null)
+                    {
+                        region.AppendChild(built);
+                    }
+                }
             });
             watcher.Run();
             return region;
         }
 
-        /// Rebuilds its content whenever something `build` read changes.
+        /// Rebuilds its content whenever something `build` read changes (the
+        /// old content plays its `:exit-to` transitions, if any, first).
         public Region Dynamic(Func<Element> build)
         {
             Region region = new Region(this);
-            Effect watcher = new Effect(runtime, runtime.currentOwner, () =>
+            Owner scope = runtime.currentOwner;
+            Owner branch = null;
+            Element shown = null;
+            Effect watcher = new Effect(runtime, scope, () =>
             {
-                // Built inside the effect: what it reads is tracked, and what
-                // it creates is owned by the effect, so a rerun disposes it.
-                Element built = build();
-                region.RemoveAllChildren();
+                if (branch != null)
+                {
+                    Element leaving = shown;
+                    Leave(branch, () => region.RemoveChild(leaving));
+                }
+                // What `build` reads is tracked by this effect; what it
+                // creates belongs to a branch of its own, so the old content
+                // can outlive a rerun while it exits.
+                Owner owner = new Owner(runtime, scope);
+                Owner saved = runtime.currentOwner;
+                runtime.currentOwner = owner;
+                Element built = null;
+                try
+                {
+                    built = build();
+                }
+                finally
+                {
+                    runtime.currentOwner = saved;
+                }
+                branch = owner;
+                shown = built;
                 if (built != null)
                 {
                     region.AppendChild(built);
@@ -549,25 +721,68 @@ namespace MenUI
             return region;
         }
 
-        private Owner SwapBranch(Region region, Owner scope, Owner previous, Func<Element> build)
+        /// Ends a scope that showed something: its elements with `:exit-to`
+        /// styles (in the tree, displayed) get that state, and once their
+        /// transitions have played, `owner` is disposed and `remove` runs.
+        /// Without any, both happen now. Returns whether it waits.
+        internal bool Leave(Owner owner, Action remove)
         {
-            if (previous != null)
+            List<Element> leaving = CollectExits(owner, null);
+            if (leaving == null)
             {
-                previous.Dispose();
+                owner.Dispose();
+                remove();
+                return false;
             }
-            region.RemoveAllChildren();
-            if (build == null)
+            for (int i = 0; i < leaving.Count; i++)
             {
-                return null;
+                leaving[i].SetPseudoState(PseudoState.ExitTo, true);
             }
-            Owner owner = new Owner(runtime, scope);
-            Element built = null;
-            runtime.RunWithOwner(owner, () => { built = build(); });
-            if (built != null)
+            StartAnimating(new ExitTask(leaving, owner, remove));
+            return true;
+        }
+
+        private List<Element> CollectExits(Owner owner, List<Element> into)
+        {
+            List<Element> candidates = owner.exitElements;
+            if (candidates != null)
             {
-                region.AppendChild(built);
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    Element e = candidates[i];
+                    if (e.computed.Display != DisplayMode.None && IsAttached(e))
+                    {
+                        if (into == null)
+                        {
+                            into = new List<Element>();
+                        }
+                        into.Add(e);
+                    }
+                }
             }
-            return owner;
+            if (owner.children != null)
+            {
+                for (int i = 0; i < owner.children.Count; i++)
+                {
+                    into = CollectExits(owner.children[i], into);
+                }
+            }
+            return into;
+        }
+
+        /// `e` has an `:exit-to` style: its scope's Leave waits for it.
+        internal void RegisterExit(Element e)
+        {
+            if (e.registeredExit || e.owner == null)
+            {
+                return;
+            }
+            e.registeredExit = true;
+            if (e.owner.exitElements == null)
+            {
+                e.owner.exitElements = new List<Element>();
+            }
+            e.owner.exitElements.Add(e);
         }
 
         /// Puts `content` on the overlay layer (above everything, unclipped)
@@ -734,27 +949,25 @@ namespace MenUI
             return new ScrollView(this, state, axis);
         }
 
-        /// A scrollbar for `state`: a track with a draggable thumb. It hides
-        /// itself while there is nothing to scroll. Style the track as usual
-        /// (its width, or height for a horizontal bar, defaults to 8).
+        /// A scrollbar for `state`: a track with a draggable thumb (press the
+        /// track to page). It hides itself while there is nothing to scroll.
+        /// In VRChat it is the way to scroll with a mouse — the wheel turns
+        /// the view there. Its look comes from the theme: tags `scrollbar`
+        /// (with class `vertical` or `horizontal`) and `scrollbar-thumb`.
         public Box Scrollbar(ScrollState state, ScrollAxis axis = ScrollAxis.Vertical)
         {
+            EnsureStyles(ComponentStyles.Scrollbar);
             bool vertical = axis != ScrollAxis.Horizontal;
-            Box track = Div();
-            Box thumb = Div().Absolute().BorderRadius(Length.Percent(50))
-                .Background(new Color(1f, 1f, 1f, 0.35f))
-                .Hover(s => s.Background(new Color(1f, 1f, 1f, 0.6f)))
-                .Active(s => s.Background(new Color(1f, 1f, 1f, 0.75f)));
+            Box track = Div().Tag("scrollbar").Class(vertical ? "vertical" : "horizontal");
+            Box thumb = Div().Tag("scrollbar-thumb").Absolute();
             if (vertical)
             {
-                track.Width(8);
-                thumb.Left(0).Right(0).Top(0).MinHeight(24)
+                thumb.Left(0).Right(0).Top(0).MinHeight(32)
                     .Height(() => Length.Percent(Proportion(state.ViewportHeight, state.ContentHeight)));
             }
             else
             {
-                track.Height(8);
-                thumb.Top(0).Bottom(0).Left(0).MinWidth(24)
+                thumb.Top(0).Bottom(0).Left(0).MinWidth(32)
                     .Width(() => Length.Percent(Proportion(state.ViewportWidth, state.ContentWidth)));
             }
             track.Display(() => (vertical ? state.MaxOffsetY : state.MaxOffsetX) > 0.5f ? DisplayMode.Block : DisplayMode.None);
@@ -813,16 +1026,17 @@ namespace MenUI
             return track.Child(thumb);
         }
 
-        /// The usual combination: a scroll view filling a box, with a thin
-        /// scrollbar laid over its right edge. Give the returned box a size.
+        /// The usual combination: a scroll view and, beside it, a scrollbar
+        /// (shown while there is something to scroll; the view takes its
+        /// room otherwise). Give the returned box a size.
         public Box ScrollArea(ScrollState state, params Element[] children)
         {
-            ScrollView view = ScrollView(state).FullSize().Children(children);
-            Box bar = Scrollbar(state).Absolute().Top(3).Bottom(3).Right(3).Width(6);
+            ScrollView view = ScrollView(state).FlexGrow(1).MinWidth(0).Children(children);
+            Box bar = Scrollbar(state).Margin(2).FlexShrink(0);
             // min-width/height 0: as a flex item it must be able to shrink below
             // its content (the scroll view's full content), the usual CSS
             // `min-height: 0` for scrolling regions.
-            return Div().Position(PositionMode.Relative).MinWidth(0).MinHeight(0).Children(view, bar);
+            return Div().Flex().Row().MinWidth(0).MinHeight(0).Children(view, bar);
         }
 
         private static float Proportion(float viewport, float content)

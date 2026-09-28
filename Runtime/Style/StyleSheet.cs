@@ -11,8 +11,9 @@
 //
 // Supported: tag (`text`, `div`, `scroll-view`, or any `.Tag(...)`), `*`,
 // `.class`, compounds (`.a.b`), `:hover` `:active` `:focus` `:disabled`
-// (and MenUI's `:dragging` `:drag-over`) on
-// the element itself, descendant (` `) and child (`>`) combinators, commas.
+// (and MenUI's `:dragging` `:drag-over`, and `:enter-from` `:exit-to` for
+// transitions — see StyleTransitions) on the element itself, descendant
+// (` `) and child (`>`) combinators, commas.
 // A pseudo-class on an ancestor (`.card:hover .title`) is not supported.
 //
 // Cascade: sheet rules by specificity (classes and pseudo-classes, then
@@ -296,6 +297,8 @@ namespace MenUI
                         : name == "disabled" ? PseudoState.Disabled
                         : name == "dragging" ? PseudoState.Dragging
                         : name == "drag-over" ? PseudoState.DragOver
+                        : name == "enter-from" ? PseudoState.EnterFrom
+                        : name == "exit-to" ? PseudoState.ExitTo
                         : 0;
                     if (state == 0) return null;
                     compound.states |= state;

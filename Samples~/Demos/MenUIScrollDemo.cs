@@ -7,7 +7,9 @@ using UnityEngine;
 //     separate Scrollbar bound to the same ScrollState;
 //   - a horizontal strip of chips rendered by For (keyed), with buttons that
 //     add, remove and rotate chips.
-// Wheel, drag (hold click and look up/down), or drag the thumb.
+// Drag the scrollbar thumb, press its track to page, or drag the content
+// (hold click and look up/down). The wheel works in ClientSim; in VRChat it
+// turns the view.
 public class MenUIScrollDemo : MenUIApp
 {
     private const int RowCount = 10000;
@@ -22,6 +24,7 @@ public class MenUIScrollDemo : MenUIApp
         Color text = Colors.Hex(0xE2E8F0);
         Color accent = Colors.Hex(0x3B82F6);
 
+        SetTheme(Theme.Dark);   // the scrollbars take the theme's colors
         ScrollState list = ScrollState();
         ScrollState chips = ScrollState();
         Signal<int> selected = Signal(-1);
@@ -51,15 +54,15 @@ public class MenUIScrollDemo : MenUIApp
             // The virtual list and its scrollbar, composed by hand. CSS `flex: 1`
             // (grow 1, basis 0) plus `min-height: 0`: its content is far taller
             // than the panel and must not count as its minimum.
-            Div().Position(PositionMode.Relative).FlexGrow(1).FlexBasis(0).MinHeight(0).BorderRadius(8).Border(1, raised).Children(
+            Div().Flex().Row().FlexGrow(1).FlexBasis(0).MinHeight(0).BorderRadius(8).Border(1, raised).Children(
                 VirtualList(list, () => rows, RowHeight, (item, index) =>
                     Div().Row().AlignItems(Align.Center).FullSize().PaddingHorizontal(12).BorderRadius(6)
                         .Background(() => selected.Value == item.Value ? accent : raised)
                         .Hover(s => s.Background(hover))
                         .OnClick(() => selected.Value = item.Value)
                         .Children(Text(() => "Row " + item.Value)),
-                    RowGap).FullSize(),
-                Scrollbar(list).Absolute().Top(3).Bottom(3).Right(3).Width(6)),
+                    RowGap).FlexGrow(1).MinWidth(0),
+                Scrollbar(list).Margin(3).FlexShrink(0)),
 
             // For: chips keep their elements as the list changes.
             Div().Row().Gap(8).Children(
@@ -93,7 +96,7 @@ public class MenUIScrollDemo : MenUIApp
                         Div().Padding(6, 14).BorderRadius(Length.Percent(50)).Background(raised)
                             .Hover(s => s.Background(hover))
                             .Children(Text(() => $"chip {id.Value} (#{index.Value})").FontSize(14))))),
-            Scrollbar(chips, ScrollAxis.Horizontal).Height(6).FlexShrink(0));
+            Scrollbar(chips, ScrollAxis.Horizontal).FlexShrink(0));
     }
 
     private Box Button(string label, Color background, Color hover, System.Action onClick)

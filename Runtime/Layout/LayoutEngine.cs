@@ -30,32 +30,96 @@ namespace MenUI
         /// Elements actually (re)arranged by the last Run — for diagnostics and tests.
         internal int arrangedCount;
 
-        /// Lays out again what was invalidated: each queued relayout boundary
-        /// (see Element.MarkLayoutDirty), shallowest first, in the rectangle
-        /// it already has. Unchanged subtrees below it are skipped.
+        // Run's working lists: invalidated elements still to place (with their
+        // depths), and the elements to lay out again in place.
+        private readonly List<Element> pending = new List<Element>();
+        private readonly List<int> pendingDepths = new List<int>();
+        private readonly List<Element> relayoutRoots = new List<Element>();
+
+        /// Lays out again what was invalidated (see Element.MarkLayoutDirty).
+        ///
+        /// First, how far each change reaches, deepest first: an invalidated
+        /// element that is a relayout boundary, or that still gives its parent
+        /// the same answers as before (early cutoff), is laid out again in the
+        /// rectangle it already has; otherwise its parent is invalidated too
+        /// and asked the same question. Deepest first matters: when an element
+        /// is measured, every change below it has already climbed as far as it
+        /// goes, so no clean ancestor on the way answers from a stale cache.
+        ///
+        /// Then those elements are arranged, shallowest first, in place.
+        /// Unchanged subtrees below them are skipped.
         internal void Run(MenUIContext context)
         {
             groups = context.groups;
             pass++;
             arrangedCount = 0;
             List<Element> queue = context.layoutQueue;
-            SortByDepth(queue);
+            pending.Clear();
+            pendingDepths.Clear();
+            relayoutRoots.Clear();
             for (int i = 0; i < queue.Count; i++)
             {
-                Element boundary = queue[i];
-                boundary.queuedForLayout = false;
-                if (!boundary.layoutDirty)
-                {
-                    continue;   // already laid out as part of a shallower boundary
-                }
-                Element top = boundary;
+                Element e = queue[i];
+                int depthOf = 0;
+                Element top = e;
                 while (top.parent != null)
                 {
                     top = top.parent;
+                    depthOf++;
                 }
                 if (top != context.root && top != context.overlayRoot)
                 {
-                    continue;   // detached; laid out when it is attached again
+                    e.queuedForLayout = false;   // detached; laid out when it is attached again
+                    e.savedAnswerCount = -1;
+                    continue;
+                }
+                pending.Add(e);
+                pendingDepths.Add(depthOf);
+            }
+            queue.Clear();
+
+            while (pending.Count > 0)
+            {
+                int deepest = 0;
+                for (int i = 1; i < pending.Count; i++)
+                {
+                    if (pendingDepths[i] > pendingDepths[deepest])
+                    {
+                        deepest = i;
+                    }
+                }
+                Element e = pending[deepest];
+                int depthOf = pendingDepths[deepest];
+                int last = pending.Count - 1;
+                pending[deepest] = pending[last];
+                pendingDepths[deepest] = pendingDepths[last];
+                pending.RemoveAt(last);
+                pendingDepths.RemoveAt(last);
+                e.queuedForLayout = false;
+
+                Element parent = e.parent;
+                if (parent == null || (e.hasArranged && e.IsLayoutBoundary()) || KeepsAnswers(e))
+                {
+                    relayoutRoots.Add(e);
+                    continue;
+                }
+                // Its size may have changed: the parent must be laid out again.
+                Invalidate(parent, pass);
+                if (!parent.queuedForLayout)
+                {
+                    parent.queuedForLayout = true;
+                    pending.Add(parent);
+                    pendingDepths.Add(depthOf - 1);
+                }
+            }
+
+            SortByDepth(relayoutRoots);
+            for (int i = 0; i < relayoutRoots.Count; i++)
+            {
+                Element boundary = relayoutRoots[i];
+                if (!boundary.layoutDirty)
+                {
+                    continue;   // already laid out as part of a shallower one
                 }
                 if (boundary.parent == null)
                 {
@@ -74,7 +138,108 @@ namespace MenUI
                         boundary.incomingClipLeft, boundary.incomingClipTop, boundary.incomingClipRight, boundary.incomingClipBottom);
                 }
             }
-            queue.Clear();
+            // Anything invalidated while arranging (a binding that follows a
+            // scroll extent) stays queued for the next run.
+        }
+
+        /// Marks an element's layout invalid (its measurements are stale from
+        /// `sincePass` on). The first time since it was last laid out, the
+        /// answers its parent got are saved first, for KeepsAnswers.
+        internal void Invalidate(Element e, int sincePass)
+        {
+            if (!e.layoutDirty)
+            {
+                SaveAnswers(e);
+            }
+            e.layoutDirty = true;
+            e.validSincePass = sincePass;
+            e.measureOverflowed = false;
+        }
+
+        private static void SaveAnswers(Element e)
+        {
+            e.savedAnswerCount = -1;
+            e.savedMinContent = -1;
+            e.savedContentHeightWidth = -1;
+            if (!e.hasArranged || e.measureOverflowed || e.parent == null)
+            {
+                return;   // the cache may not hold every question the parent asked
+            }
+            if (e.savedAnswers == null)
+            {
+                e.savedAnswers = new int[Element.MeasureCacheSlots * 5];
+            }
+            int[] cache = e.measureCache;
+            int[] saved = e.savedAnswers;
+            int count = 0;
+            for (int slot = 0; slot < Element.MeasureCacheSlots; slot++)
+            {
+                int o = slot * 6;
+                if (cache[o + 5] == 0 || cache[o + 5] < e.validSincePass)
+                {
+                    continue;
+                }
+                int s = count * 5;
+                saved[s] = cache[o];
+                saved[s + 1] = cache[o + 1];
+                saved[s + 2] = cache[o + 2];
+                saved[s + 3] = cache[o + 3];
+                saved[s + 4] = cache[o + 4];
+                count++;
+            }
+            e.savedAnswerCount = count;
+            if (e.minContentPass != 0 && e.minContentPass >= e.validSincePass)
+            {
+                e.savedMinContent = e.minContentWidth;
+            }
+            if (e.contentHeightPass != 0 && e.contentHeightPass >= e.validSincePass)
+            {
+                e.savedContentHeightWidth = e.contentHeightWidth;
+                e.savedContentHeight = e.contentHeightAnswer;
+            }
+        }
+
+        /// Early cutoff: whether an invalidated element still measures exactly
+        /// as before for every question its parent asked (sizes, its
+        /// min-content width, its content height). Then the parent's layout
+        /// cannot change, and the element is laid out again in place.
+        /// Measuring here fills the cache the arrange that follows reads.
+        private bool KeepsAnswers(Element e)
+        {
+            int count = e.savedAnswerCount;
+            e.savedAnswerCount = -1;   // used once
+            if (count <= 0 || !e.hasArranged)
+            {
+                return false;
+            }
+            int[] saved = e.savedAnswers;
+            for (int i = 0; i < count; i++)
+            {
+                int s = i * 5;
+                int width, height;
+                Measure(e, saved[s], saved[s + 1] != 0, saved[s + 2], out width, out height);
+                if (width != saved[s + 3] || height != saved[s + 4])
+                {
+                    return false;
+                }
+            }
+            if (e.savedMinContent >= 0 && MinContentWidth(e) != e.savedMinContent)
+            {
+                return false;
+            }
+            if (e.savedContentHeightWidth >= 0)
+            {
+                if (ContentHeightAt(e, e.savedContentHeightWidth) != e.savedContentHeight)
+                {
+                    return false;
+                }
+                // The parent keeps relying on it: current again (the measure
+                // cache and min-content width were refreshed above).
+                e.contentHeightWidth = e.savedContentHeightWidth;
+                e.contentHeightAnswer = e.savedContentHeight;
+                e.contentHeightPass = pass;
+            }
+            return true;
         }
 
         private static void SortByDepth(List<Element> list)
@@ -390,54 +555,6 @@ namespace MenUI
             int minimum = s.Resolve(StyleProperty.MinHeight, reference, 0);
             int maximum = s.Resolve(StyleProperty.MaxHeight, reference, Unbounded);
             return Mathf.Max(minimum, Mathf.Min(value, maximum));
-        }
-
-        /// Whether a leaf whose content just changed still measures exactly as
-        /// before for every constraint in its cache — the questions its parent
-        /// asked. Leaves the element dirty either way.
-        internal bool ContentKeepsSize(Element e)
-        {
-            bool eligible = e.IsLeaf && e.hasArranged && !e.layoutDirty && !e.measureOverflowed && e.parent != null;
-            e.layoutDirty = true;
-            if (!eligible)
-            {
-                return false;
-            }
-            int[] cache = e.measureCache;
-            int[] saved = new int[cache.Length];
-            for (int i = 0; i < cache.Length; i++)
-            {
-                saved[i] = cache[i];
-            }
-            pass++;
-            bool any = false;
-            for (int slot = 0; slot < Element.MeasureCacheSlots; slot++)
-            {
-                int o = slot * 6;
-                if (saved[o + 5] == 0 || saved[o + 5] < e.validSincePass)
-                {
-                    continue;
-                }
-                any = true;
-                int width, height;
-                Measure(e, saved[o], saved[o + 1] != 0, saved[o + 2], out width, out height);
-                if (width != saved[o + 3] || height != saved[o + 4])
-                {
-                    return false;
-                }
-            }
-            if (!any)
-            {
-                return false;
-            }
-            // Same answers: keep the entries exactly as they were (re-measuring
-            // stored duplicates and would otherwise count as an overflow).
-            for (int i = 0; i < cache.Length; i++)
-            {
-                cache[i] = saved[i];
-            }
-            e.measureOverflowed = false;
-            return true;
         }
 
         // Cache entries per element: [availableWidth, exact, availableHeight, width, height, pass].
@@ -945,7 +1062,18 @@ namespace MenUI
                 int crossForItem = crossAvailable >= 0 ? Mathf.Max(0, crossAvailable - marginsCross) : -1;
                 int width, height;
                 Measure(item, crossForItem, stretched && crossDefinite, -1, out width, out height);
-                content = c.Resolve(StyleProperty.Height, -1, -1) >= 0 ? ContentHeightAt(item, width) : height;
+                if (c.Resolve(StyleProperty.Height, -1, -1) >= 0)
+                {
+                    content = ContentHeightAt(item, width);
+                    // Not in the measure cache: remembered for early cutoff.
+                    item.contentHeightWidth = width;
+                    item.contentHeightAnswer = content;
+                    item.contentHeightPass = pass;
+                }
+                else
+                {
+                    content = height;
+                }
             }
             content = Mathf.Min(content, maximum);
             int specified = c.Resolve(mainProperty, mainReference, -1);

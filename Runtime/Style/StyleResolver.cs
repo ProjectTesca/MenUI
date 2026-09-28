@@ -111,6 +111,10 @@ namespace MenUI
             }
             SortRules(matched);
             element.matchedRules = matched.Count > 0 ? matched : null;
+            if ((mask & PseudoState.ExitTo) != 0)
+            {
+                context.RegisterExit(element);
+            }
             if (mask != element.stateRuleMask)
             {
                 element.stateRuleMask = mask;
@@ -185,23 +189,17 @@ namespace MenUI
             }
         }
 
-        /// Returns whether an inherited value changed (children must follow).
-        private bool Resolve(Element element, ComputedStyle parent, float scale)
-        {
-            ComputedStyle computed = element.computed;
-            for (int i = 0; i < StyleProperty.Count; i++)
-            {
-                previousNumbers[i] = computed.numbers[i];
-                previousUnits[i] = computed.units[i];
-                previousColors[i] = computed.colors[i];
-            }
+        private readonly ComputedStyle enteringScratch = new ComputedStyle();
 
+        /// Defaults, inherited values, matched rules (those whose states are
+        /// all in `states`), the inline style, then the state variants.
+        private void Cascade(Element element, ComputedStyle parent, ComputedStyle computed, int states, float scale)
+        {
             computed.Reset();
             if (parent != null)
             {
                 computed.InheritFrom(parent);
             }
-            int states = element.pseudoStates;
             List<StyleRule> rules = element.matchedRules;
             if (rules != null)
             {
@@ -221,6 +219,38 @@ namespace MenUI
             if ((states & PseudoState.DragOver) != 0 && element.dragOverStyle != null) computed.Apply(element.dragOverStyle, scale, currentContext);
             if ((states & PseudoState.Dragging) != 0 && element.draggingStyle != null) computed.Apply(element.draggingStyle, scale, currentContext);
             if ((states & PseudoState.Disabled) != 0 && element.disabledStyle != null) computed.Apply(element.disabledStyle, scale, currentContext);
+            if ((states & PseudoState.EnterFrom) != 0 && element.enterFromStyle != null) computed.Apply(element.enterFromStyle, scale, currentContext);
+            if ((states & PseudoState.ExitTo) != 0 && element.exitToStyle != null) computed.Apply(element.exitToStyle, scale, currentContext);
+        }
+
+        /// Returns whether an inherited value changed (children must follow).
+        private bool Resolve(Element element, ComputedStyle parent, float scale)
+        {
+            ComputedStyle computed = element.computed;
+            for (int i = 0; i < StyleProperty.Count; i++)
+            {
+                previousNumbers[i] = computed.numbers[i];
+                previousUnits[i] = computed.units[i];
+                previousColors[i] = computed.colors[i];
+            }
+
+            int states = element.pseudoStates;
+            Cascade(element, parent, computed, states, scale);
+            // Transitions: the style above is the target; show where each
+            // moving property is now. A new element starts from its
+            // `:enter-from` style, if it has one.
+            if (computed.hasTransitions || element.animator != null)
+            {
+                ComputedStyle entering = null;
+                if (!element.styleResolvedOnce && (element.enterFromStyle != null
+                    || (element.stateRuleMask & PseudoState.EnterFrom) != 0))
+                {
+                    entering = enteringScratch;
+                    Cascade(element, parent, entering, states | PseudoState.EnterFrom, scale);
+                }
+                currentContext.styleAnimations.Apply(element, previousNumbers, previousUnits, previousColors, entering);
+            }
+            element.styleResolvedOnce = true;
             element.styleDirty = false;
 
             bool layoutChanged = previousNumbers[StyleProperty.FontFamily] != computed.numbers[StyleProperty.FontFamily];
@@ -244,6 +274,13 @@ namespace MenUI
             else
             {
                 element.MarkPaintDirty();
+            }
+            // What pointers can hit (see InputRouter.RebuildHitList).
+            if (previousNumbers[StyleProperty.PointerEvents] != computed.numbers[StyleProperty.PointerEvents]
+                || previousNumbers[StyleProperty.Visibility] != computed.numbers[StyleProperty.Visibility]
+                || (previousColors[StyleProperty.Background].a > 0f) != (computed.colors[StyleProperty.Background].a > 0f))
+            {
+                element.context.hitVersion++;
             }
             // What is drawn at all, and in which order: rebuild every record.
             if (previousNumbers[StyleProperty.Display] != computed.numbers[StyleProperty.Display]

@@ -33,6 +33,9 @@ namespace MenUI
         public int bufferHeight = 768;
         [Tooltip("Physical pixels per logical pixel.")]
         public float scale = 1.5f;
+        [Tooltip("While playing, changing the size or scale above resizes the panel live. This point of the panel "
+            + "stays in place (0,0 bottom-left, 0.5,0.5 center, 0,1 top-left).")]
+        public Vector2 resizePivot = new Vector2(0.5f, 0.5f);
 
         [Header("Diagnostics")]
         [Tooltip("Log start-up timings, slow frames and a summary of the first seconds.")]
@@ -63,6 +66,11 @@ namespace MenUI
         public RectTransform textInputCanvas;
 
         private MenUIContext ui;
+        // What the panel was last sized to, and its world size per physical
+        // pixel (kept when resizing: a bigger buffer is a bigger panel).
+        private int appliedWidth, appliedHeight;
+        private float appliedScale;
+        private float metersPerPixel;
 
         // Start-up diagnostics: the whole frame time (not only MenUI's) over
         // the first seconds, to tell MenUI's cost from the editor warming up.
@@ -88,6 +96,10 @@ namespace MenUI
             }
             long start = Stopwatch.GetTimestamp();
             FitColliderToDisplay();
+            appliedWidth = bufferWidth;
+            appliedHeight = bufferHeight;
+            appliedScale = scale;
+            metersPerPixel = displayRenderer.transform.localScale.x / bufferWidth;
             TextShaper[] shapers = new TextShaper[shapingTexts.Length];
             for (int i = 0; i < shapers.Length; i++)
             {
@@ -126,6 +138,10 @@ namespace MenUI
             if (ui == null)
             {
                 return;
+            }
+            if (bufferWidth != appliedWidth || bufferHeight != appliedHeight || scale != appliedScale)
+            {
+                ResizePanel(bufferWidth, bufferHeight, scale);
             }
             long start = Stopwatch.GetTimestamp();
             ui.Tick(Time.deltaTime);
@@ -179,6 +195,35 @@ namespace MenUI
                         + " ms (frame " + worstFrameIndex + "); worst MenUI work " + worstMenUI.ToString("0.0") + " ms");
                 }
             }
+        }
+
+        /// Resizes the panel while it runs: `width` x `height` physical pixels
+        /// at `newScale` physical pixels per logical pixel. The panel grows
+        /// or shrinks in the world with its pixel size (around resizePivot);
+        /// the scale zooms the content within it. Editing bufferWidth,
+        /// bufferHeight or scale in the inspector during play does the same.
+        public void ResizePanel(int width, int height, float newScale)
+        {
+            if (ui == null)
+            {
+                return;
+            }
+            ui.Resize(width, height, newScale);
+            // The context clamps; follow what it settled on.
+            width = ui.bufferWidth;
+            height = ui.bufferHeight;
+            newScale = ui.scale;
+            Transform display = displayRenderer.transform;
+            Vector3 oldSize = display.localScale;
+            float newWidth = width * metersPerPixel;
+            float newHeight = height * metersPerPixel;
+            display.localPosition += new Vector3((resizePivot.x - 0.5f) * (oldSize.x - newWidth),
+                (resizePivot.y - 0.5f) * (oldSize.y - newHeight), 0f);
+            display.localScale = new Vector3(newWidth, newHeight, oldSize.z);
+            FitColliderToDisplay();
+            bufferWidth = appliedWidth = width;
+            bufferHeight = appliedHeight = height;
+            scale = appliedScale = newScale;
         }
 
         /// The panel's collider covers the display quad wherever it was moved
@@ -243,6 +288,10 @@ namespace MenUI
         protected Computed<T> Computed<T>(Func<T> compute) { return ui.Computed(compute); }
         protected Effect Effect(Action body) { return ui.Effect(body); }
         protected void Batch(Action action) { ui.Batch(action); }
+        protected AnimatedFloat Animated(float initial) { return ui.Animated(initial); }
+        protected AnimatedColor Animated(Color initial) { return ui.Animated(initial); }
+        protected Playback Animate(float seconds, Action<float> frame, Easing easing = null, Action onComplete = null) { return ui.Animate(seconds, frame, easing, onComplete); }
+        protected Playback EveryFrame(Action<float> tick) { return ui.EveryFrame(tick); }
         protected T Untrack<T>(Func<T> read) { return ui.Untrack(read); }
         protected void OnCleanup(Action cleanup) { ui.OnCleanup(cleanup); }
         protected Region Show(Func<bool> condition, Func<Element> then, Func<Element> otherwise = null) { return ui.Show(condition, then, otherwise); }
@@ -265,6 +314,9 @@ namespace MenUI
         protected Region Dialog(Signal<bool> open, Func<Element> content, bool closeOnBackdrop = true) { return ui.Dialog(open, content, closeOnBackdrop); }
         protected void Toast(string message, float seconds = 3f) { ui.Toast(message, seconds); }
         protected void SetTheme(Theme theme) { ui.SetTheme(theme); }
+        /// The panel's size in logical pixels (what 100% means at the top).
+        protected float LogicalWidth { get { return ui.LogicalWidth; } }
+        protected float LogicalHeight { get { return ui.LogicalHeight; } }
         protected ScrollState ScrollState() { return ui.ScrollState(); }
         protected ScrollView ScrollView(ScrollState state, ScrollAxis axis = ScrollAxis.Vertical) { return ui.ScrollView(state, axis); }
         protected Box Scrollbar(ScrollState state, ScrollAxis axis = ScrollAxis.Vertical) { return ui.Scrollbar(state, axis); }

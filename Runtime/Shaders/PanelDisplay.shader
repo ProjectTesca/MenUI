@@ -1,4 +1,6 @@
-// Shows the premultiplied panel texture on a world-space quad.
+// Shows the premultiplied panel texture on a world-space quad. The panel may
+// use only part of the texture (it has room to grow while resizing live):
+// _MainTex_ST selects that part.
 Shader "MenUI/PanelDisplay"
 {
     Properties
@@ -21,6 +23,7 @@ Shader "MenUI/PanelDisplay"
             #include "UnityCG.cginc"
 
             sampler2D _MainTex;
+            float4 _MainTex_ST;
 
             struct appdata
             {
@@ -42,7 +45,7 @@ Shader "MenUI/PanelDisplay"
                 UNITY_SETUP_INSTANCE_ID(input);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
                 output.position = UnityObjectToClipPos(input.vertex);
-                output.uv = input.uv;
+                output.uv = TRANSFORM_TEX(input.uv, _MainTex);
                 return output;
             }
 

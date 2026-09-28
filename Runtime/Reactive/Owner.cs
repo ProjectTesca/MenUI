@@ -19,6 +19,9 @@ namespace MenUI
         internal List<Owner> children;
         internal List<Action> cleanups;
         internal bool disposed;
+        /// Elements made in this scope that have an exit to play (see
+        /// MenUIContext.Leave).
+        internal List<Element> exitElements;
 
         internal Owner(ReactiveRuntime runtime, Owner parent)
         {

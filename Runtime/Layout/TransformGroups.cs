@@ -55,6 +55,15 @@ namespace MenUI
             clipBottom[Root] = panelHeight;
         }
 
+        /// The root group's clip: the whole panel.
+        internal void SetPanelSize(int panelWidth, int panelHeight)
+        {
+            clipRight[Root] = panelWidth;
+            clipBottom[Root] = panelHeight;
+            dirty = true;
+            uploadPending = true;
+        }
+
         internal int Allocate()
         {
             for (int i = 1; i < Capacity; i++)

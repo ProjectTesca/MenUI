@@ -22,6 +22,10 @@ namespace MenUI
         protected Computed<T> Computed<T>(Func<T> compute) { return context.Computed(compute); }
         protected Effect Effect(Action body) { return context.Effect(body); }
         protected void Batch(Action action) { context.Batch(action); }
+        protected AnimatedFloat Animated(float initial) { return context.Animated(initial); }
+        protected AnimatedColor Animated(UnityEngine.Color initial) { return context.Animated(initial); }
+        protected Playback Animate(float seconds, Action<float> frame, Easing easing = null, Action onComplete = null) { return context.Animate(seconds, frame, easing, onComplete); }
+        protected Playback EveryFrame(Action<float> tick) { return context.EveryFrame(tick); }
         protected T Untrack<T>(Func<T> read) { return context.Untrack(read); }
         protected void OnCleanup(Action cleanup) { context.OnCleanup(cleanup); }
         protected Region Show(Func<bool> condition, Func<Element> then, Func<Element> otherwise = null) { return context.Show(condition, then, otherwise); }

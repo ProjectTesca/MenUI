@@ -45,12 +45,12 @@ namespace MenUI
         {
             ui.EnsureStyles(ComponentStyles.Switch);
             // The thumb slides: 0 off, 1 on.
-            Signal<float> position = ui.Signal(isOn.Peek() ? 1f : 0f);
-            Tween tween = new Tween(ui, position);
+            AnimatedFloat position = ui.Animated(isOn.Peek() ? 1f : 0f);
+            AnimationSpec slide = AnimationSpec.Spring(900f, 0.85f);
             ui.Bind(() =>
             {
                 bool on = isOn.Value;
-                tween.To(on ? 1f : 0f, 0.15f);
+                position.AnimateTo(on ? 1f : 0f, slide);
             });
             Box thumb = ui.Div().Tag("switch-thumb").Bind(e => e.Left(2f + 16f * position.Value));
             Box track = ui.Div().Tag("switch").Class("checked", () => isOn.Value).Child(thumb);
@@ -130,7 +130,9 @@ namespace MenUI
         internal static Box Spinner(MenUIContext ui)
         {
             ui.EnsureStyles(ComponentStyles.Spinner);
-            Signal<float> phase = ui.Signal(0f);
+            // 0 → 1 once per 1.2 s, forever.
+            AnimatedFloat phase = ui.Animated(0f);
+            phase.Play(new Keyframes(0f).To(1f, 1.2f), true);
             Box spinner = ui.Div().Tag("spinner");
             for (int i = 0; i < 3; i++)
             {
@@ -138,9 +140,6 @@ namespace MenUI
                 spinner.Child(ui.Div().Tag("spinner-dot").Opacity(() =>
                     0.25f + 0.75f * (0.5f + 0.5f * Mathf.Cos((phase.Value - offset) * Mathf.PI * 2f))));
             }
-            SpinnerAnimation animation = new SpinnerAnimation(ui, phase);
-            ui.StartAnimating(animation);
-            ui.OnCleanup(() => animation.stopped = true);
             return spinner;
         }
 
@@ -182,79 +181,6 @@ namespace MenUI
                 text.FontFamily(ui.fontFamilies[0]);
             }
             return text;
-        }
-    }
-
-    /// Moves a signal toward a target over a short time (ease-out).
-    internal sealed class Tween : IFrameTask
-    {
-        private readonly MenUIContext ui;
-        private readonly Signal<float> value;
-        private float from, to, duration, elapsed;
-        private bool running;
-
-        internal Tween(MenUIContext ui, Signal<float> value)
-        {
-            this.ui = ui;
-            this.value = value;
-            to = value.Peek();
-        }
-
-        internal void To(float target, float seconds)
-        {
-            if (target == to)
-            {
-                return;
-            }
-            from = value.Peek();
-            to = target;
-            duration = seconds;
-            elapsed = 0f;
-            if (!running)
-            {
-                running = true;
-                ui.StartAnimating(this);
-            }
-        }
-
-        public bool Tick(float seconds)
-        {
-            elapsed += seconds;
-            float t = duration > 0f ? Mathf.Clamp01(elapsed / duration) : 1f;
-            float eased = 1f - (1f - t) * (1f - t);
-            float next = from + (to - from) * eased;
-            ui.runtime.Batch(() => { value.Value = next; });
-            if (t >= 1f)
-            {
-                running = false;
-                return false;
-            }
-            return true;
-        }
-    }
-
-    internal sealed class SpinnerAnimation : IFrameTask
-    {
-        private const float Period = 1.2f;   // seconds per cycle
-        private readonly MenUIContext ui;
-        private readonly Signal<float> phase;
-        internal bool stopped;
-
-        internal SpinnerAnimation(MenUIContext ui, Signal<float> phase)
-        {
-            this.ui = ui;
-            this.phase = phase;
-        }
-
-        public bool Tick(float seconds)
-        {
-            if (stopped)
-            {
-                return false;
-            }
-            float next = (phase.Peek() + seconds / Period) % 1f;
-            ui.runtime.Batch(() => { phase.Value = next; });
-            return true;
         }
     }
 }

@@ -13,6 +13,14 @@ namespace MenUI
         public const int Dragging = 16;
         /// A drop target with an acceptable payload over it (`:drag-over`).
         public const int DragOver = 32;
+        /// Where a newly shown element starts from (`:enter-from`, like CSS
+        /// `@starting-style`): its first style is computed with this state
+        /// on, and its transitions carry it from there to its real style.
+        public const int EnterFrom = 64;
+        /// Where a leaving element goes (`:exit-to`): when the region that
+        /// shows it removes it, it gets this state and stays until its
+        /// transitions have played.
+        public const int ExitTo = 128;
     }
 
     /// A node of the UI tree. Layout sees every element as a rectangle;
@@ -31,6 +39,8 @@ namespace MenUI
         internal Style disabledStyle;
         internal Style draggingStyle;
         internal Style dragOverStyle;
+        internal Style enterFromStyle;
+        internal Style exitToStyle;
         internal DragSourceConfig dragSource;
         internal DropTargetConfig dropTarget;
         internal int pseudoStates;
@@ -48,6 +58,15 @@ namespace MenUI
         internal int activeCount;
         internal PointerHandlers pointerHandlers;
         internal readonly ComputedStyle computed = new ComputedStyle();
+        /// Its style has been resolved before (transitions start only from a
+        /// style that was shown).
+        internal bool styleResolvedOnce;
+        /// Running style transitions (null: none so far).
+        internal StyleAnimator animator;
+        /// The reactive scope it was created in: removing that scope plays
+        /// the element's exit (see MenUIContext.Leave).
+        internal readonly Owner owner;
+        internal bool registeredExit;
 
         // Dirty tracking.
         internal bool styleDirty = true;
@@ -74,6 +93,18 @@ namespace MenUI
         /// Entries measured in an earlier pass than this describe content
         /// that has since changed: they are ignored, and evicting them is fine.
         internal int validSincePass;
+        // The answers its parent got before the element was invalidated
+        // (LayoutEngine.Invalidate): [availableWidth, exact, availableHeight,
+        // width, height] per entry, and the min-content width (-1: not asked).
+        // If they all still hold, the parent's layout cannot change.
+        // `savedAnswerCount` -1: unknown, the change must climb.
+        internal int[] savedAnswers;
+        internal int savedAnswerCount = -1;
+        internal int savedMinContent = -1;
+        // The last content height its parent asked for (a flex column's
+        // automatic minimum): at which width, the answer, and when.
+        internal int contentHeightWidth, contentHeightAnswer, contentHeightPass;
+        internal int savedContentHeightWidth = -1, savedContentHeight;
 
         // What the last arrange was given, so an unchanged subtree can be
         // skipped and a relayout boundary rearranged in place.
@@ -100,6 +131,7 @@ namespace MenUI
         protected Element(MenUIContext context)
         {
             this.context = context;
+            owner = context.runtime.currentOwner;
         }
 
         Style IStyleTarget.StyleForWriting { get { return inlineStyle; } }
@@ -238,33 +270,31 @@ namespace MenUI
             child.MarkStyleDirty();
         }
 
-        /// Invalidates this element's layout. The invalidation climbs the
-        /// ancestors up to the nearest relayout boundary — an element whose
-        /// size cannot depend on what is inside it — and only that boundary's
-        /// subtree is laid out again. `sizeMayChange` starts the climb at the
-        /// parent: a change to this element's own width, margin, flex factors
-        /// or display affects the parent's layout even if it is a boundary.
+        /// Invalidates this element's layout. The layout pass then works out
+        /// how far up the change reaches (LayoutEngine.Run): it climbs the
+        /// ancestors only while their size changes — an ancestor that still
+        /// measures the same for everything its parent asked is laid out
+        /// again in place, and nothing above it is touched — and stops at a
+        /// relayout boundary (an element whose size cannot depend on what is
+        /// inside it). `sizeMayChange` starts at the parent: a change to this
+        /// element's own width, margin, flex factors or display affects the
+        /// parent's layout even if it is a boundary.
         internal void MarkLayoutDirty(bool sizeMayChange)
         {
-            layoutDirty = true;
-            measureOverflowed = false;   // the parent measures afresh
-            int nextPass = context.layout.NextPass;
-            validSincePass = nextPass;
-            Element element = sizeMayChange && parent != null ? parent : this;
-            while (true)
+            LayoutEngine layout = context.layout;
+            int nextPass = layout.NextPass;
+            Element start = sizeMayChange && parent != null ? parent : this;
+            if (start != this)
             {
-                element.layoutDirty = true;
-                element.validSincePass = nextPass;
-                if (element.parent == null || (element.hasArranged && element.IsLayoutBoundary()))
-                {
-                    break;
-                }
-                element = element.parent;
+                layoutDirty = true;
+                validSincePass = nextPass;
+                measureOverflowed = false;   // the parent measures afresh
             }
-            if (!element.queuedForLayout)
+            layout.Invalidate(start, nextPass);
+            if (!start.queuedForLayout)
             {
-                element.queuedForLayout = true;
-                context.layoutQueue.Add(element);
+                start.queuedForLayout = true;
+                context.layoutQueue.Add(start);
             }
             context.needsLayout = true;
             context.needsPaint = true;
@@ -273,7 +303,10 @@ namespace MenUI
         /// Its size never depends on its content, so nothing outside it needs
         /// to be laid out again when its content changes:
         ///   - a pixel width and height (flex grow/shrink depend on the basis,
-        ///     which is that size, and on siblings — not on this content), or
+        ///     which is that size, and on siblings — not on this content),
+        ///     except for a flex item that may shrink to its content-based
+        ///     automatic minimum (set min-width/height, flex-shrink: 0 or
+        ///     overflow: hidden to make it one), or
         ///   - absolutely positioned with each axis fixed by a pixel size or by
         ///     both insets (its box comes from the parent, and it never
         ///     affects the parent's size).
@@ -292,7 +325,32 @@ namespace MenUI
             bool heightFixed = s.Unit(StyleProperty.Height) == (int)LengthUnit.Pixels
                 || (absolute && s.Unit(StyleProperty.Height) == auto
                     && s.Unit(StyleProperty.Top) != auto && s.Unit(StyleProperty.Bottom) != auto);
-            return widthFixed && heightFixed;
+            if (!widthFixed || !heightFixed)
+            {
+                return false;
+            }
+            // A flex item has a content-based minimum on the main axis
+            // (`min-width/height: auto`) even with a pixel size; it matters
+            // unless the item cannot shrink below its size.
+            bool mayShrink = s.Number(StyleProperty.FlexShrink) > 0f || s.Unit(StyleProperty.FlexBasis) != auto;
+            if (!absolute && mayShrink && !s.ClipsContent && !(this is ScrollView))
+            {
+                Element container = parent;
+                while (container != null && container.computed.Display == DisplayMode.Contents)
+                {
+                    container = container.parent;
+                }
+                if (container != null && container.computed.Display == DisplayMode.Flex)
+                {
+                    Direction direction = (Direction)container.computed.Enum(StyleProperty.Direction);
+                    bool row = direction == Direction.Row || direction == Direction.RowReverse;
+                    if (s.Unit(row ? StyleProperty.MinWidth : StyleProperty.MinHeight) == auto)
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
 
         /// A leaf's content changed (new text). If it still measures the same
@@ -301,17 +359,6 @@ namespace MenUI
         /// climbs like any other.
         internal void ContentChanged()
         {
-            if (context.layout.ContentKeepsSize(this))
-            {
-                if (!queuedForLayout)
-                {
-                    queuedForLayout = true;
-                    context.layoutQueue.Add(this);
-                }
-                context.needsLayout = true;
-                context.needsPaint = true;
-                return;
-            }
             MarkLayoutDirty(false);
         }
 
@@ -410,6 +457,8 @@ namespace MenUI
             if (state == PseudoState.Focus) return focusStyle;
             if (state == PseudoState.Dragging) return draggingStyle;
             if (state == PseudoState.DragOver) return dragOverStyle;
+            if (state == PseudoState.EnterFrom) return enterFromStyle;
+            if (state == PseudoState.ExitTo) return exitToStyle;
             return disabledStyle;
         }
 
@@ -420,6 +469,8 @@ namespace MenUI
             if (state == PseudoState.Focus) return focusStyle ?? (focusStyle = new Style());
             if (state == PseudoState.Dragging) return draggingStyle ?? (draggingStyle = new Style());
             if (state == PseudoState.DragOver) return dragOverStyle ?? (dragOverStyle = new Style());
+            if (state == PseudoState.EnterFrom) return enterFromStyle ?? (enterFromStyle = new Style());
+            if (state == PseudoState.ExitTo) return exitToStyle ?? (exitToStyle = new Style());
             return disabledStyle ?? (disabledStyle = new Style());
         }
 

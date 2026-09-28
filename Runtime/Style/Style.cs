@@ -90,6 +90,8 @@ namespace MenUI
         internal readonly Color[] colors = new Color[StyleProperty.Count];
         internal Shadow[] shadows;
         internal string fontFamily;
+        /// Per property, how changes to it animate (null: they jump).
+        internal AnimationSpec[] transitions;
 
         // The properties that were set, in the order they were first set, so
         // merging touches only those.
@@ -177,6 +179,25 @@ namespace MenUI
             return true;
         }
 
+        /// Returns whether anything changed.
+        internal bool SetTransition(int property, AnimationSpec spec)
+        {
+            if (transitions == null)
+            {
+                if (spec == null)
+                {
+                    return false;
+                }
+                transitions = new AnimationSpec[StyleProperty.Count];
+            }
+            if (transitions[property] == spec)
+            {
+                return false;
+            }
+            transitions[property] = spec;
+            return true;
+        }
+
         internal void SetShadows(Shadow[] value)
         {
             shadows = value;
@@ -201,6 +222,16 @@ namespace MenUI
             if (other.isSet[StyleProperty.FontFamily])
             {
                 fontFamily = other.fontFamily;
+            }
+            if (other.transitions != null)
+            {
+                for (int i = 0; i < StyleProperty.Count; i++)
+                {
+                    if (other.transitions[i] != null)
+                    {
+                        SetTransition(i, other.transitions[i]);
+                    }
+                }
             }
         }
 

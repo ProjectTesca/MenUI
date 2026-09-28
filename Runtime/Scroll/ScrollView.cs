@@ -45,7 +45,7 @@ namespace MenUI
             // The offset goes to the GPU, snapped to whole physical pixels.
             context.Bind(() =>
             {
-                float scale = context.scale;
+                float scale = context.TrackedScale;
                 context.groups.SetOffset(group, -Mathf.Round(state.OffsetX * scale), -Mathf.Round(state.OffsetY * scale));
             });
 

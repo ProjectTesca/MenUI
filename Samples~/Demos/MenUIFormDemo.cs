@@ -15,6 +15,7 @@ public class MenUIFormDemo : MenUIApp
         Color muted = Colors.Hex(0x94A3B8);
         Color accent = Colors.Hex(0x3B82F6);
 
+        SetTheme(Theme.Dark);   // built-in buttons, scrollbar and toasts on a dark page
         AddStyleSheet(new StyleSheet()
             .Rule("input, textarea", s => s.Background(Colors.Hex(0x0F172A)).TextColor(text).Border(1, Colors.Hex(0x475569)))
             .Rule("input:hover, textarea:hover", s => s.BorderColor(Colors.Hex(0x64748B)))

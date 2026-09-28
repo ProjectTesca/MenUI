@@ -12,6 +12,10 @@
 // `dialog`, ... Any rule or chained style of yours overrides them; e.g.
 // `.Rule("button.primary", s => s.BorderRadius(999))`. A component's rules
 // are added the first time one is built.
+//
+// Colors change with a short transition (hover, checking, switching themes),
+// and popups fade in and out (`:enter-from` / `:exit-to` rules); override
+// `.Transition(...)` in your own rules to change that.
 
 using UnityEngine;
 
@@ -123,16 +127,21 @@ namespace MenUI
         internal const int Tooltip = 2048;
         internal const int Toast = 4096;
         internal const int Divider = 8192;
-        internal const int Last = Divider;
+        internal const int Scrollbar = 16384;
+        internal const int Last = Scrollbar;
 
         internal static void Add(StyleSheet sheet, Theme t, int kind)
         {
             float r = t.Radius;
+            // State changes: quick. Popups: a little slower in than out.
+            AnimationSpec quick = AnimationSpec.Tween(0.12f, Easing.EaseOut);
+            AnimationSpec fadeIn = AnimationSpec.Tween(0.16f, Easing.EaseOut);
+            AnimationSpec fadeOut = AnimationSpec.Tween(0.12f, Easing.EaseIn);
             if (kind == TextBox)
             {
                 sheet
                     .Rule("input, textarea", s => s.Padding(6, 10).Background(t.Surface).TextColor(t.Text)
-                        .Border(1, t.Border).BorderRadius(r))
+                        .Border(1, t.Border).BorderRadius(r).Transition(StyleProperty.BorderColor, quick))
                     .Rule("input:hover, textarea:hover", s => s.BorderColor(t.BorderHover))
                     .Rule("input:focus, textarea:focus", s => s.BorderColor(t.Accent).BoxShadow(Ring(t.Accent)))
                     .Rule("input:disabled, textarea:disabled", s => s.Opacity(0.5f));
@@ -141,7 +150,8 @@ namespace MenUI
             {
                 sheet
                     .Rule("button", s => s.Center().Row().Gap(6).Padding(6, 14).Width(Length.FitContent)
-                        .BorderRadius(r).Border(1, t.Border).Background(t.Surface).TextColor(t.Text))
+                        .BorderRadius(r).Border(1, t.Border).Background(t.Surface).TextColor(t.Text)
+                        .Transition(StyleProperty.Background, quick).Transition(StyleProperty.BorderColor, quick))
                     .Rule("button:hover", s => s.Background(t.SurfaceHover))
                     .Rule("button:active", s => s.Background(t.SurfaceActive))
                     .Rule("button.primary", s => s.Background(t.Accent).BorderColor(t.Accent).TextColor(t.AccentText))
@@ -157,7 +167,8 @@ namespace MenUI
                 AddLabel(sheet);
                 sheet
                     .Rule("checkbox", s => s.Center().Size(18, 18).FlexShrink(0).BorderRadius(4).Border(1, t.Border)
-                        .Background(t.Surface).TextColor(Colors.Transparent).FontSize(13))
+                        .Background(t.Surface).TextColor(Colors.Transparent).FontSize(13)
+                        .Transition(StyleProperty.Background, quick).Transition(StyleProperty.BorderColor, quick))
                     .Rule("checkbox:hover", s => s.BorderColor(t.BorderHover))
                     .Rule("checkbox.checked", s => s.Background(t.Accent).BorderColor(t.Accent).TextColor(t.AccentText));
             }
@@ -166,7 +177,7 @@ namespace MenUI
                 AddLabel(sheet);
                 sheet
                     .Rule("switch", s => s.Position(PositionMode.Relative).Size(36, 20).FlexShrink(0)
-                        .BorderRadius(10).Background(t.Track))
+                        .BorderRadius(10).Background(t.Track).Transition(StyleProperty.Background, quick))
                     .Rule("switch.checked", s => s.Background(t.Accent))
                     .Rule("switch-thumb", s => s.Absolute().Top(2).Size(16, 16).BorderRadius(8)
                         .Background(Colors.White).BoxShadow(Shadow.Small));
@@ -176,10 +187,12 @@ namespace MenUI
                 AddLabel(sheet);
                 sheet
                     .Rule("radio", s => s.Center().Size(18, 18).FlexShrink(0).BorderRadius(9).Border(1, t.Border)
-                        .Background(t.Surface))
+                        .Background(t.Surface).Transition(StyleProperty.Background, quick)
+                        .Transition(StyleProperty.BorderColor, quick))
                     .Rule("radio:hover", s => s.BorderColor(t.BorderHover))
                     .Rule("radio.checked", s => s.Background(t.Accent).BorderColor(t.Accent))
-                    .Rule("radio-dot", s => s.Size(6, 6).BorderRadius(3).Background(Colors.Transparent))
+                    .Rule("radio-dot", s => s.Size(6, 6).BorderRadius(3).Background(Colors.Transparent)
+                        .Transition(StyleProperty.Background, quick))
                     .Rule("radio.checked > radio-dot", s => s.Background(t.AccentText));
             }
             else if (kind == Slider)
@@ -211,14 +224,19 @@ namespace MenUI
                 sheet
                     .Rule("select", s => s.Row().AlignItems(Align.Center).JustifyContent(Justify.SpaceBetween).Gap(8)
                         .Padding(6, 10).MinWidth(120).BorderRadius(r).Border(1, t.Border)
-                        .Background(t.Surface).TextColor(t.Text))
+                        .Background(t.Surface).TextColor(t.Text).Transition(StyleProperty.BorderColor, quick))
                     .Rule("select:hover", s => s.BorderColor(t.BorderHover))
                     .Rule("select.open", s => s.BorderColor(t.Accent).BoxShadow(Ring(t.Accent)))
                     .Rule("select:disabled", s => s.Opacity(0.5f))
                     .Rule("select-arrow", s => s.FontSize(10).TextColor(t.MutedText))
+                    .Rule("select-layer", s => s.Absolute().Inset(0).PointerEvents(PointerEventsMode.Auto))
+                    .Rule("select-layer:exit-to", s => s.PointerEvents(PointerEventsMode.None))
                     .Rule("select-menu", s => s.Absolute().Padding(4).BorderRadius(r).Border(1, t.Border)
-                        .Background(t.Popup).TextColor(t.Text).BoxShadow(Shadow.Medium))
-                    .Rule("option", s => s.Padding(6, 10).BorderRadius(4))
+                        .Background(t.Popup).TextColor(t.Text).BoxShadow(Shadow.Medium)
+                        .Transition(StyleProperty.Opacity, fadeIn).Transition(StyleProperty.MarginTop, fadeIn))
+                    .Rule("select-menu:enter-from", s => s.Opacity(0f).MarginTop(-6))
+                    .Rule("select-menu:exit-to", s => s.Opacity(0f).Transition(StyleProperty.Opacity, fadeOut))
+                    .Rule("option", s => s.Padding(6, 10).BorderRadius(4).Transition(StyleProperty.Background, quick))
                     .Rule("option:hover", s => s.Background(t.SurfaceHover))
                     .Rule("option.selected", s => s.TextColor(t.Accent));
             }
@@ -227,7 +245,7 @@ namespace MenUI
                 sheet
                     .Rule("tabs", s => s.Row().Gap(4).BorderWidth(0, 0, 1, 0).BorderColor(t.Border))
                     .Rule("tab", s => s.Padding(8, 14).MarginBottom(-1).BorderWidth(0, 0, 2, 0)
-                        .BorderColor(Colors.Transparent).TextColor(t.MutedText))
+                        .BorderColor(Colors.Transparent).TextColor(t.MutedText).Transition(StyleProperty.BorderColor, quick))
                     .Rule("tab:hover", s => s.TextColor(t.Text))
                     .Rule("tab.selected", s => s.BorderColor(t.Accent).TextColor(t.Text))
                     .Rule("tab:disabled", s => s.Opacity(0.5f));
@@ -236,14 +254,21 @@ namespace MenUI
             {
                 sheet
                     .Rule("dialog-backdrop", s => s.Absolute().Inset(0).Center().Background(t.Backdrop)
-                        .PointerEvents(PointerEventsMode.Auto))
+                        .PointerEvents(PointerEventsMode.Auto).Transition(StyleProperty.Opacity, fadeIn))
+                    .Rule("dialog-backdrop:enter-from", s => s.Opacity(0f))
+                    .Rule("dialog-backdrop:exit-to", s => s.Opacity(0f).PointerEvents(PointerEventsMode.None)
+                        .Transition(StyleProperty.Opacity, fadeOut))
                     .Rule("dialog", s => s.Column().Gap(12).Padding(20).MinWidth(280).MaxWidth(Length.Percent(90))
                         .BorderRadius(12).Background(t.Popup).TextColor(t.Text).BoxShadow(Shadow.Large));
             }
             else if (kind == Tooltip)
             {
-                sheet.Rule("tooltip", s => s.Absolute().Padding(4, 8).BorderRadius(4).FontSize(13)
-                    .Background(t.Inverse).TextColor(t.InverseText).PointerEvents(PointerEventsMode.None));
+                sheet
+                    .Rule("tooltip", s => s.Absolute().Padding(4, 8).BorderRadius(4).FontSize(13)
+                        .Background(t.Inverse).TextColor(t.InverseText).PointerEvents(PointerEventsMode.None)
+                        .Transition(StyleProperty.Opacity, fadeIn))
+                    .Rule("tooltip:enter-from", s => s.Opacity(0f))
+                    .Rule("tooltip:exit-to", s => s.Opacity(0f).Transition(StyleProperty.Opacity, fadeOut));
             }
             else if (kind == Toast)
             {
@@ -251,7 +276,20 @@ namespace MenUI
                     .Rule("toast-stack", s => s.Absolute().Left(0).Right(0).Bottom(24).Column()
                         .AlignItems(Align.Center).Gap(8).PointerEvents(PointerEventsMode.None))
                     .Rule("toast", s => s.Padding(10, 16).BorderRadius(8).Background(t.Inverse).TextColor(t.InverseText)
-                        .BoxShadow(Shadow.Medium));
+                        .BoxShadow(Shadow.Medium).Transition(StyleProperty.Opacity, AnimationSpec.Tween(0.25f, Easing.EaseOut)))
+                    .Rule("toast:enter-from", s => s.Opacity(0f))
+                    .Rule("toast:exit-to", s => s.Opacity(0f));
+            }
+            else if (kind == Scrollbar)
+            {
+                sheet
+                    .Rule("scrollbar", s => s.Position(PositionMode.Relative).BorderRadius(6).Background(t.SurfaceHover))
+                    .Rule("scrollbar.vertical", s => s.Width(12))
+                    .Rule("scrollbar.horizontal", s => s.Height(12))
+                    .Rule("scrollbar-thumb", s => s.BorderRadius(6).Background(t.BorderHover)
+                        .Transition(StyleProperty.Background, quick))
+                    .Rule("scrollbar-thumb:hover", s => s.Background(t.MutedText))
+                    .Rule("scrollbar-thumb:active", s => s.Background(t.Text));
             }
             else if (kind == Divider)
             {

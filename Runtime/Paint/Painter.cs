@@ -19,7 +19,10 @@
 //
 // Opacity is multiplied into each primitive (group opacity — rendering the
 // subtree offscreen first — is not done yet), so overlapping children of a
-// translucent element show through each other.
+// translucent element show through each other. A fully transparent subtree
+// is skipped — unless its opacity transitions: then it keeps its records at
+// zero alpha, so fading in and out rewrites records instead of adding and
+// dropping them (a full paint).
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -47,6 +50,9 @@ namespace MenUI
         /// how many elements it rewrote otherwise.
         internal bool lastPaintWasFull;
         internal int lastRepaintedCount;
+        /// Painting inside a subtree whose opacity transitions: keep records
+        /// even at zero alpha.
+        private bool keepTransparent;
 
         internal Painter(PanelRenderer renderer)
         {
@@ -86,20 +92,24 @@ namespace MenUI
                     continue;
                 }
                 float opacity = AncestorOpacity(e) * e.computed.Opacity;
+                keepTransparent = FadesInTree(e);
+                bool draw = opacity > 0f || keepTransparent;
                 renderer.BeginOverwrite(e.boxRecordStart, e.boxRecordCount);
-                if (opacity > 0f)
+                if (draw)
                 {
                     PaintBox(e, opacity);
                 }
                 if (!renderer.EndOverwrite())
                 {
+                    keepTransparent = false;
                     return false;
                 }
                 renderer.BeginOverwrite(e.contentRecordStart, e.contentRecordCount);
-                if (opacity > 0f)
+                if (draw)
                 {
                     e.PaintContent(this, opacity);
                 }
+                keepTransparent = false;
                 if (!renderer.EndOverwrite())
                 {
                     return false;
@@ -117,6 +127,7 @@ namespace MenUI
             context.hitVersion++;
             Element root = context.root;
             Element overlayRoot = context.overlayRoot;
+            keepTransparent = false;
             if (root.computed.Display != DisplayMode.None)
             {
                 PaintContext(root, root.computed.Opacity);
@@ -125,6 +136,24 @@ namespace MenUI
             {
                 PaintContext(overlayRoot, overlayRoot.computed.Opacity);
             }
+        }
+
+        /// Its opacity transitions (so it may be fading).
+        private static bool Fades(Element e)
+        {
+            return e.computed.TransitionOf(StyleProperty.Opacity) != null;
+        }
+
+        private static bool FadesInTree(Element e)
+        {
+            for (Element a = e; a != null; a = a.parent)
+            {
+                if (Fades(a))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private void PaintOwnBox(Element e, float opacity)
@@ -150,10 +179,17 @@ namespace MenUI
 
         private void PaintContext(Element context, float opacity)
         {
-            if (opacity <= 0f)
+            bool saved = keepTransparent;
+            keepTransparent = FadesInTree(context);
+            if (opacity > 0f || keepTransparent)
             {
-                return;
+                PaintContextContent(context, opacity);
             }
+            keepTransparent = saved;
+        }
+
+        private void PaintContextContent(Element context, float opacity)
+        {
             PaintOwnBox(context, opacity);
 
             List<Element> contexts = new List<Element>();
@@ -177,13 +213,18 @@ namespace MenUI
 
         private void PaintFlow(Element e, float opacity)
         {
-            if (opacity <= 0f)
+            bool saved = keepTransparent;
+            if (Fades(e))
             {
-                return;
+                keepTransparent = true;
             }
-            PaintOwnBox(e, opacity);
-            PaintOwnContent(e, opacity);
-            PaintFlowChildren(e, opacity);
+            if (opacity > 0f || keepTransparent)
+            {
+                PaintOwnBox(e, opacity);
+                PaintOwnContent(e, opacity);
+                PaintFlowChildren(e, opacity);
+            }
+            keepTransparent = saved;
         }
 
         private void PaintFlowChildren(Element e, float opacity)
@@ -307,9 +348,10 @@ namespace MenUI
                 }
             }
 
-            // An element whose look follows a state (a hover background) keeps
-            // its record while transparent, so the state change rewrites that
-            // record instead of changing the record count (a full paint).
+            // An element whose look follows a state (a hover background) or
+            // transitions keeps its record while transparent, so the change
+            // rewrites that record instead of changing the record count (a
+            // full paint).
             if (background.a > 0f || (hasBorder && !hasInset) || HasStateStyles(e))
             {
                 int record = Begin(e, x, y, width, height);
@@ -362,7 +404,10 @@ namespace MenUI
         private static bool HasStateStyles(Element e)
         {
             return e.stateRuleMask != 0 || e.hoverStyle != null || e.activeStyle != null || e.focusStyle != null
-                || e.disabledStyle != null || e.draggingStyle != null || e.dragOverStyle != null;
+                || e.disabledStyle != null || e.draggingStyle != null || e.dragOverStyle != null
+                || e.enterFromStyle != null || e.exitToStyle != null
+                || e.computed.TransitionOf(StyleProperty.Background) != null
+                || e.computed.TransitionOf(StyleProperty.BorderColor) != null;
         }
 
         // ================================================================
@@ -384,7 +429,7 @@ namespace MenUI
                 return;
             }
             Color linear = Premultiplied(color, opacity);
-            if (linear.a <= 0f)
+            if (linear.a <= 0f && !keepTransparent)
             {
                 return;
             }

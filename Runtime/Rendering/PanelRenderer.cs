@@ -37,16 +37,18 @@ namespace MenUI
         private int overwriteEnd;
         private bool overwriteOverflowed;
 
-        internal readonly RenderTexture target;
+        // The panel is drawn into the top-left `width` x `height` of the
+        // target, which can be larger: a live resize within it only changes
+        // what the display shows, instead of making a new texture each frame.
+        internal RenderTexture target;
+        private readonly Material displayMaterial;
+        private int width, height;
 
         internal PanelRenderer(Camera camera, Renderer quadPool, Renderer display, int capacity, int width, int height)
         {
             this.camera = camera;
             this.quadPool = quadPool;
             this.capacity = capacity;
-
-            target = new RenderTexture(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
-            camera.targetTexture = target;
             camera.enabled = false;
             quadPool.enabled = false;
 
@@ -58,10 +60,37 @@ namespace MenUI
             material = quadPool.material;   // an instance of its own
             material.SetTexture("_RecordTexture", recordTexture);
             material.SetVector("_RecordTextureSize", new Vector4(TexelsPerRecord, capacity, 0f, 0f));
-            material.SetVector("_TargetSize", new Vector4(width, height, 0f, 0f));
 
-            Material displayMaterial = display.material;
-            displayMaterial.SetTexture("_MainTex", target);
+            displayMaterial = display.material;
+            Resize(width, height);
+        }
+
+        /// The panel's size in physical pixels. The texture is replaced only
+        /// when it is too small (with room to spare, for a growing panel).
+        internal void Resize(int newWidth, int newHeight)
+        {
+            width = newWidth;
+            height = newHeight;
+            if (target == null || target.width < width || target.height < height)
+            {
+                bool first = target == null;
+                int textureWidth = first ? width : Mathf.Max(width, Mathf.CeilToInt(target.width * 1.25f));
+                int textureHeight = first ? height : Mathf.Max(height, Mathf.CeilToInt(target.height * 1.25f));
+                if (!first)
+                {
+                    textureWidth = Mathf.Max(textureWidth, Mathf.CeilToInt(width * 1.25f));
+                    textureHeight = Mathf.Max(textureHeight, Mathf.CeilToInt(height * 1.25f));
+                    target.Release();
+                }
+                target = new RenderTexture(textureWidth, textureHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+                camera.targetTexture = target;
+                displayMaterial.SetTexture("_MainTex", target);
+                material.SetVector("_TargetSize", new Vector4(textureWidth, textureHeight, 0f, 0f));
+            }
+            // Texture v runs bottom-up and the panel sits at the top.
+            float usedWidth = (float)width / target.width;
+            float usedHeight = (float)height / target.height;
+            displayMaterial.SetVector("_MainTex_ST", new Vector4(usedWidth, usedHeight, 0f, 1f - usedHeight));
         }
 
         internal void SetGroups(Vector4[] offsets, Vector4[] clips)

@@ -12,6 +12,9 @@ namespace MenUI
         internal readonly Color[] colors = new Color[StyleProperty.Count];
         internal readonly bool[] isSet = new bool[StyleProperty.Count];
         internal Shadow[] shadows;   // physical pixels
+        /// Per property, how changes animate; only read while `hasTransitions`.
+        internal AnimationSpec[] transitions;
+        internal bool hasTransitions;
 
         internal void Reset()
         {
@@ -22,6 +25,14 @@ namespace MenUI
                 isSet[i] = false;
             }
             shadows = null;
+            if (hasTransitions)
+            {
+                for (int i = 0; i < StyleProperty.Count; i++)
+                {
+                    transitions[i] = null;
+                }
+                hasTransitions = false;
+            }
 
             numbers[StyleProperty.Display] = (int)DisplayMode.Block;
             numbers[StyleProperty.Direction] = (int)Direction.Row;
@@ -100,6 +111,28 @@ namespace MenUI
                 numbers[StyleProperty.FontFamily] = context != null ? context.ResolveFontFamily(style.fontFamily) : 0;
                 units[StyleProperty.FontFamily] = (int)LengthUnit.Pixels;
             }
+            AnimationSpec[] specified = style.transitions;
+            if (specified != null)
+            {
+                if (transitions == null)
+                {
+                    transitions = new AnimationSpec[StyleProperty.Count];
+                }
+                for (int i = 0; i < StyleProperty.Count; i++)
+                {
+                    if (specified[i] != null)
+                    {
+                        transitions[i] = specified[i];
+                        hasTransitions = true;
+                    }
+                }
+            }
+        }
+
+        /// How changes to `property` animate (null: they jump).
+        internal AnimationSpec TransitionOf(int property)
+        {
+            return hasTransitions ? transitions[property] : null;
         }
 
         /// Properties whose number is a pixel length (the rest are enums or

@@ -114,9 +114,533 @@ namespace MenUI
             ui.groups.Resolve();
             PublishPaintOrder(ui);
         }
+        // Lets transitions (and exits) finish, then publishes the paint order.
+        static void Settle(MenUIContext ui)
+        {
+            Frames(ui, 40);
+            PublishPaintOrder(ui);
+        }
         // Center of an element on the panel (physical px).
         static float CenterX(MenUIContext ui, Element e) => e.X + ui.groups.offsets[e.group].x + e.Width / 2f;
         static float CenterY(MenUIContext ui, Element e) => e.Y + ui.groups.offsets[e.group].y + e.Height / 2f;
+
+        static bool Near(float a, float b, float tolerance = 0.001f) => Mathf.Abs(a - b) <= tolerance;
+
+        // ---- easing, motion, animated values ----
+        static void AnimationTests()
+        {
+            {
+                Check("easing: linear", Easing.Linear.Evaluate(0.3f) == 0.3f);
+                Easing ease = Easing.Ease;
+                Check("easing: ends", ease.Evaluate(0f) == 0f && ease.Evaluate(1f) == 1f && ease.Evaluate(-1f) == 0f && ease.Evaluate(2f) == 1f);
+                // Reference values of CSS `ease` (cubic-bezier(0.25, 0.1, 0.25, 1)).
+                Check("easing: css ease", Near(ease.Evaluate(0.5f), 0.8024f, 0.002f) && Near(ease.Evaluate(0.25f), 0.4094f, 0.002f),
+                    ease.Evaluate(0.5f) + " " + ease.Evaluate(0.25f));
+                Easing inOut = Easing.EaseInOut;
+                Check("easing: symmetric ease-in-out", Near(inOut.Evaluate(0.5f), 0.5f, 0.001f)
+                    && Near(inOut.Evaluate(0.2f), 1f - inOut.Evaluate(0.8f), 0.002f));
+                Easing back = Easing.CubicBezier(0.34f, 1.56f, 0.64f, 1f);   // overshoots
+                float peak = 0f;
+                for (int i = 0; i <= 100; i++) peak = Mathf.Max(peak, back.Evaluate(i / 100f));
+                Check("easing: bezier y may overshoot", peak > 1.05f, peak.ToString());
+                Easing flat = Easing.CubicBezier(0f, 0f, 1f, 1f);   // x1 == y1, x2 == y2: linear
+                Check("easing: degenerate bezier is linear", Near(flat.Evaluate(0.37f), 0.37f));
+                float monotone = -1f;
+                bool increasing = true;
+                Easing steep = Easing.CubicBezier(0.9f, 0f, 0.1f, 1f);
+                for (int i = 0; i <= 200; i++)
+                {
+                    float v = steep.Evaluate(i / 200f);
+                    if (v < monotone - 0.0005f) increasing = false;
+                    monotone = v;
+                }
+                Check("easing: steep curve stays monotone", increasing);
+                Check("easing: custom", Easing.Custom(t => t * t).Evaluate(0.5f) == 0.25f);
+            }
+
+            {
+                var ui = NewContext(1f, 100, 100);
+                AnimatedFloat value = ui.Animated(0f);
+                int runs = 0;
+                float seen = -1f;
+                ui.Effect(() => { seen = value.Value; runs++; });
+                bool done = false;
+                value.AnimateTo(10f, AnimationSpec.Tween(0.5f, Easing.Linear), () => done = true);
+                Frames(ui, 15);   // 0.25 s
+                Check("animated: tween halfway", Near(seen, 5f, 0.01f) && !done, seen.ToString());
+                Frames(ui, 20);
+                Check("animated: tween arrives and completes", seen == 10f && done && !value.IsAnimating);
+                Check("animated: one binding run per frame", runs == 1 + 30, runs.ToString());
+
+                value.AnimateTo(0f, AnimationSpec.Spring(400f, 1f));
+                float previous = value.Peek();
+                bool overshoot = false, monotone = true;
+                for (int i = 0; i < 120; i++)
+                {
+                    Frames(ui, 1);
+                    if (value.Peek() < -0.0001f) overshoot = true;
+                    if (value.Peek() > previous + 0.0001f) monotone = false;
+                    previous = value.Peek();
+                }
+                Check("animated: critical spring settles without overshoot", value.Peek() == 0f && !overshoot && monotone && !value.IsAnimating);
+
+                value.AnimateTo(10f, AnimationSpec.Spring(400f, 0.3f));
+                float highest = 0f;
+                for (int i = 0; i < 300; i++) { Frames(ui, 1); highest = Mathf.Max(highest, value.Peek()); }
+                Check("animated: bouncy spring overshoots, then rests", highest > 10.5f && value.Peek() == 10f, highest.ToString());
+
+                // Retargeting a spring midway keeps it continuous (no jump, velocity kept).
+                value.AnimateTo(0f, AnimationSpec.Spring(300f, 0.8f));
+                Frames(ui, 6);
+                float before = value.Peek();
+                float velocity = value.Velocity;
+                value.AnimateTo(20f, AnimationSpec.Spring(300f, 0.8f));
+                Check("animated: retarget keeps value and velocity", value.Peek() == before && value.Velocity == velocity);
+                Frames(ui, 1);
+                Check("animated: and moves on smoothly", Mathf.Abs(value.Peek() - before) < 2f, before + " -> " + value.Peek());
+
+                value.Set(3f);
+                Check("animated: set jumps and stops", value.Peek() == 3f && !value.IsAnimating && seen == 3f);
+
+                // Delay: nothing moves before it.
+                value.AnimateTo(5f, AnimationSpec.Tween(0.2f, Easing.Linear).Delay(0.2f));
+                Frames(ui, 6);
+                Check("animated: delay holds", value.Peek() == 3f);
+                Frames(ui, 30);
+                Check("animated: then moves", value.Peek() == 5f);
+
+                // Keyframes, looping.
+                value.Play(new Keyframes(0f).To(1f, 0.5f).Hold(0.5f), true);
+                Frames(ui, 15);
+                Check("keyframes: first segment", Near(value.Peek(), 0.5f, 0.02f), value.Peek().ToString());
+                Frames(ui, 30);
+                Check("keyframes: hold", value.Peek() == 1f);
+                Frames(ui, 30);
+                Check("keyframes: loops", value.Peek() < 0.6f && value.IsAnimating, value.Peek().ToString());
+                value.Stop();
+                Check("keyframes: stop", !value.IsAnimating);
+
+                // Chained: onComplete starts the next animation.
+                int legs = 0;
+                value.Set(0f);
+                value.AnimateTo(1f, AnimationSpec.Tween(0.1f), () => { legs++; value.AnimateTo(2f, AnimationSpec.Tween(0.1f), () => legs++); });
+                Frames(ui, 30);
+                Check("animated: chained animations", legs == 2 && value.Peek() == 2f);
+
+                AnimatedColor color = ui.Animated(Colors.Black);
+                color.AnimateTo(Colors.White, AnimationSpec.Tween(0.2f, Easing.Linear));
+                Frames(ui, 6);
+                Check("animated color: midway", Near(color.Peek().r, 0.5f, 0.02f) && color.Peek().a == 1f, color.Peek().ToString());
+                Frames(ui, 10);
+                Check("animated color: arrives", color.Peek() == Colors.White);
+
+                float total = 0f;
+                float last = -1f;
+                ui.Animate(0.5f, t => last = t, null, () => total = 1f);
+                Frames(ui, 10);
+                Check("animate: progress", last > 0.2f && last < 0.5f && total == 0f, last.ToString());
+                Frames(ui, 30);
+                Check("animate: ends with 1", last == 1f && total == 1f);
+                int ticks = 0;
+                Playback every = ui.EveryFrame(dt => ticks++);
+                Frames(ui, 5);
+                every.Stop();
+                Frames(ui, 5);
+                Check("every frame: until stopped", ticks == 5, ticks.ToString());
+
+                // An animation made in a scope stops with it.
+                var show = ui.Signal(true);
+                AnimatedFloat inner = null;
+                Layout(ui, ui.Div().Children(ui.Show(() => show.Value, () =>
+                {
+                    inner = ui.Animated(0f);
+                    inner.AnimateTo(1f, AnimationSpec.Tween(1f));
+                    return ui.Div();
+                })));
+                Frames(ui, 5);
+                float stoppedAt = inner.Peek();
+                show.Value = false;
+                Frames(ui, 30);
+                Check("animated: stops with its scope", inner.Peek() == stoppedAt && stoppedAt > 0f);
+            }
+        }
+
+        // ---- style transitions, enter and exit ----
+        static void TransitionTests()
+        {
+            {
+                var ui = NewContext(1f, 200, 200);
+                var on = ui.Signal(false);
+                Box box = ui.Div().Size(50, 50).Background(() => on.Value ? Colors.White : Colors.Black)
+                    .Transition(StyleProperty.Background, AnimationSpec.Tween(0.2f, Easing.Linear));
+                Box after = ui.Div().Size(10, 10);
+                Layout(ui, ui.Div().Children(box, after));
+                Check("transition: no animation on the first style", box.computed.ColorOf(StyleProperty.Background) == Colors.Black
+                    && box.animator == null);
+                on.Value = true;
+                Relayout(ui);
+                Check("transition: starts where it was", box.computed.ColorOf(StyleProperty.Background) == Colors.Black);
+                Frames(ui, 6);
+                Color mid = box.computed.ColorOf(StyleProperty.Background);
+                Check("transition: midway", Near(mid.r, 0.5f, 0.03f), mid.ToString());
+                Check("transition: a color change does not lay out", ui.layout.arrangedCount == 0, "arranged=" + ui.layout.arrangedCount);
+                Frames(ui, 10);
+                Check("transition: arrives", box.computed.ColorOf(StyleProperty.Background) == Colors.White && !box.animator.IsRunning);
+                on.Value = false;
+                Relayout(ui);
+                Frames(ui, 3);
+                on.Value = true;   // back midway: from where it is, no jump
+                Relayout(ui);
+                Color turned = box.computed.ColorOf(StyleProperty.Background);
+                Check("transition: retarget from the shown value", turned.r > 0.5f && turned.r < 1f, turned.ToString());
+                Frames(ui, 20);
+                Check("transition: retarget arrives", box.computed.ColorOf(StyleProperty.Background) == Colors.White);
+            }
+
+            {
+                // A width that springs: the layout follows each frame.
+                var ui = NewContext(1f, 400, 200);
+                var wide = ui.Signal(false);
+                Box grow = ui.Div().Height(20).Width(() => wide.Value ? (Length)200 : 50)
+                    .Transition(StyleProperty.Width, AnimationSpec.Tween(0.25f, Easing.Linear));
+                Box next = ui.Div().Size(10, 20);
+                Layout(ui, ui.Div().Row().Children(grow, next));
+                wide.Value = true;
+                Relayout(ui);
+                Check("width transition: starts at the old width", grow.Width == 50 && next.X == 50);
+                Frames(ui, 8);
+                Check("width transition: siblings follow midway", grow.Width > 80 && grow.Width < 170 && next.X == grow.Width, R(grow) + R(next));
+                Frames(ui, 20);
+                Check("width transition: arrives", grow.Width == 200 && next.X == 200);
+                // auto -> px cannot interpolate: it jumps.
+                grow.Width(Length.Auto);
+                Relayout(ui);
+                Check("width transition: auto jumps", grow.animator == null || !grow.animator.IsRunning);
+            }
+
+            {
+                // Inherited: the text color reaches the children.
+                var ui = NewContext(1f, 200, 200);
+                var red = ui.Signal(false);
+                var label = new FakeText(ui, "x");
+                Box holder = ui.Div().TextColor(() => red.Value ? Color.red : Color.black)
+                    .Transition(StyleProperty.TextColor, AnimationSpec.Tween(0.2f, Easing.Linear)).Children(label);
+                Layout(ui, holder);
+                red.Value = true;
+                Relayout(ui);
+                Frames(ui, 6);
+                Check("inherited transition: children follow", Near(label.computed.ColorOf(StyleProperty.TextColor).r, 0.5f, 0.05f),
+                    label.computed.ColorOf(StyleProperty.TextColor).ToString());
+                Frames(ui, 10);
+                Check("inherited transition: arrives", label.computed.ColorOf(StyleProperty.TextColor) == Color.red
+                    && holder.animator.animations.Count == 0);
+            }
+
+            {
+                // Enter and exit through Show.
+                var ui = NewContext(1f, 200, 200);
+                var open = ui.Signal(false);
+                int cleanups = 0;
+                Box panel = null;
+                Region region = ui.Show(() => open.Value, () =>
+                {
+                    ui.OnCleanup(() => cleanups++);
+                    panel = ui.Div().Size(40, 40).Background(Colors.White)
+                        .EnterFrom(s => s.Opacity(0f)).ExitTo(s => s.Opacity(0f))
+                        .Transition(StyleProperty.Opacity, AnimationSpec.Tween(0.2f, Easing.Linear));
+                    return panel;
+                });
+                Layout(ui, ui.Div().Children(region));
+                open.Value = true;
+                Relayout(ui);
+                Check("enter: starts from :enter-from", panel.computed.Opacity == 0f);
+                Frames(ui, 6);
+                Check("enter: fades in", panel.computed.Opacity > 0.3f && panel.computed.Opacity < 0.7f, panel.computed.Opacity.ToString());
+                Frames(ui, 10);
+                Check("enter: arrives", panel.computed.Opacity == 1f);
+                open.Value = false;
+                Relayout(ui);
+                Check("exit: stays while exiting", region.children.Count == 1 && cleanups == 0
+                    && (panel.pseudoStates & PseudoState.ExitTo) != 0);
+                Frames(ui, 6);
+                Check("exit: fades out", panel.computed.Opacity > 0.2f && panel.computed.Opacity < 0.8f && region.children.Count == 1,
+                    panel.computed.Opacity.ToString());
+                Frames(ui, 20);
+                Check("exit: removed and disposed after", region.children.Count == 0 && cleanups == 1);
+
+                // Reopened while the old one is still leaving: both are there for a moment.
+                open.Value = true;
+                Relayout(ui);
+                Frames(ui, 20);
+                Box first = panel;
+                open.Value = false;
+                Relayout(ui);
+                Frames(ui, 2);
+                open.Value = true;
+                Relayout(ui);
+                Check("exit: a new branch while the old leaves", region.children.Count == 2 && panel != first);
+                Frames(ui, 30);
+                Check("exit: the old one goes", region.children.Count == 1 && region.children[0] == panel);
+
+                // Without :exit-to, removal is immediate.
+                var plain = ui.Signal(true);
+                Region quick = ui.Show(() => plain.Value, () => ui.Div().Size(5, 5));
+                ui.root.children[0].AppendChild(quick);
+                Relayout(ui);
+                plain.Value = false;
+                Check("exit: none means immediate", quick.children.Count == 0);
+            }
+
+            {
+                // Exit from a keyed list keeps the element in its place.
+                var ui = NewContext(1f, 200, 300);
+                var items = ui.Signal(new System.Collections.Generic.List<int> { 1, 2, 3 });
+                Region list = ui.For(() => items.Value, i => i, (item, index) =>
+                    ui.Div().Height(20).ExitTo(s => s.Opacity(0f)).Transition(StyleProperty.Opacity, AnimationSpec.Tween(0.2f)));
+                Layout(ui, ui.Div().Children(list));
+                Element second = list.children[1];
+                items.Value = new System.Collections.Generic.List<int> { 1, 3, 4 };
+                Relayout(ui);
+                Check("list exit: stays in place while leaving", list.children.Count == 4 && list.children[1] == second
+                    && second.Y == 20, list.children.Count + " " + R(second));
+                Frames(ui, 30);
+                Check("list exit: then removed", list.children.Count == 3 && !list.children.Contains(second));
+            }
+
+            {
+                // Dynamic: the old content exits while the new one is there.
+                var ui = NewContext(1f, 200, 200);
+                var page = ui.Signal(0);
+                Region dynamic = ui.Dynamic(() => ui.Div().Height(10 + page.Value)
+                    .ExitTo(s => s.Opacity(0f)).Transition(StyleProperty.Opacity, AnimationSpec.Tween(0.1f)));
+                Layout(ui, ui.Div().Children(dynamic));
+                page.Value = 1;
+                Relayout(ui);
+                Check("dynamic exit: both for a moment", dynamic.children.Count == 2);
+                Frames(ui, 20);
+                Check("dynamic exit: then the new one", dynamic.children.Count == 1 && dynamic.children[0].Height == 11);
+            }
+
+            {
+                // Style sheet rules can declare transitions and :enter-from.
+                var ui = NewContext(1f, 200, 200);
+                ui.AddStyleSheet(new StyleSheet()
+                    .Rule("card", s => s.Size(30, 30).BorderRadius(0).Transition(TransitionGroup.Corners, AnimationSpec.Tween(0.2f, Easing.Linear)))
+                    .Rule("card:enter-from", s => s.BorderRadius(15))
+                    .Rule("card:hover", s => s.BorderRadius(8)));
+                Box card = ui.Div().Tag("card");
+                Layout(ui, ui.Div().Children(card));
+                Check("rule transition: enter from a rule", card.computed.numbers[StyleProperty.CornerTopLeft] == 15f);
+                Frames(ui, 20);
+                Check("rule transition: arrives", card.computed.numbers[StyleProperty.CornerTopLeft] == 0f);
+                card.SetPseudoState(PseudoState.Hover, true);
+                Relayout(ui);
+                Frames(ui, 6);
+                float corner = card.computed.numbers[StyleProperty.CornerBottomLeft];
+                Check("rule transition: hover animates the group", corner > 2f && corner < 6f, corner.ToString());
+            }
+        }
+
+        // ---- early cutoff: a change stops where sizes stop changing ----
+        static void CutoffTests()
+        {
+            {
+                var ui = NewContext(1f, 300, 300);
+                var w = ui.Signal((Length)10);
+                Box changing = ui.Div().Height(10).Width(() => w.Value);
+                Box fixedRow = ui.Div().Row().Height(30).Children(changing, ui.Div().Size(10, 10));   // auto width: not a boundary
+                Box[] siblings = new Box[4];
+                Box column = ui.Div().Column().Child(fixedRow);
+                for (int i = 0; i < siblings.Length; i++) { siblings[i] = ui.Div().Height(20); column.Child(siblings[i]); }
+                Layout(ui, column);
+                w.Value = 60;
+                Relayout(ui);
+                Check("cutoff: inside updated", changing.Width == 60 && fixedRow.children[1].X == 60, R(fixedRow.children[1]));
+                Check("cutoff: stops at the row (same size)", ui.layout.arrangedCount == 3, "arranged=" + ui.layout.arrangedCount);
+            }
+
+            {
+                // Text in a wrapping paragraph: a longer text grows its box, and
+                // the change reaches up only while sizes change.
+                var ui = NewContext(1f, 300, 300);
+                var label = new FakeText(ui, "abc");
+                Box card = ui.Div().Width(200).Padding(5).Children(label);   // fixed width, auto height
+                Box outer = ui.Div().Column().Children(card, ui.Div().Height(10));
+                Layout(ui, outer);
+                label.Set("abcdef");   // wider, same height
+                Relayout(ui);
+                Check("cutoff: text width change stays in the card", ui.layout.arrangedCount == 1, "arranged=" + ui.layout.arrangedCount);
+            }
+
+            // Randomized: incremental layout must equal a layout from scratch.
+            var random = new System.Random(1234);
+            int mismatches = 0;
+            string firstMismatch = "";
+            for (int round = 0; round < 40; round++)
+            {
+                var spec = RandomTree(random, 18);
+                var live = NewContext(1f, 400, 400);
+                var liveElements = BuildTree(live, spec);
+                Layout(live, liveElements[0]);
+                for (int step = 0; step < 12; step++)
+                {
+                    Mutate(random, spec, liveElements);
+                    Relayout(live);
+                    var fresh = NewContext(1f, 400, 400);
+                    var freshElements = BuildTree(fresh, spec);
+                    Layout(fresh, freshElements[0]);
+                    for (int i = 0; i < spec.Count; i++)
+                    {
+                        Element a = liveElements[i], b = freshElements[i];
+                        if (IsHidden(b)) continue;   // display: none — no box to compare
+                        if (a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height)
+                        {
+                            if (mismatches == 0) firstMismatch = $"round {round} step {step} node {i}: {R(a)} vs {R(b)}";
+                            mismatches++;
+                            break;
+                        }
+                    }
+                }
+            }
+            Check("cutoff: incremental layout matches a fresh layout", mismatches == 0, mismatches + " " + firstMismatch);
+        }
+
+        static bool IsHidden(Element e)
+        {
+            for (Element a = e; a != null; a = a.Parent)
+            {
+                if (a.computed.Display == DisplayMode.None) return true;
+            }
+            return false;
+        }
+
+        sealed class NodeSpec
+        {
+            public int parent = -1;
+            public bool text;
+            public string content = "";
+            public int display;       // 0 block, 1 flex row, 2 flex column
+            public bool wrap;
+            public int width = -1;    // -1 auto, -2 50%
+            public int height = -1;
+            public int padding, margin, gap;
+            public float grow;
+            public int align;         // 0 stretch, 1 start, 2 center
+            public int position;      // 0 in flow, 1 absolute at left/top, 2 absolute inset on both sides
+            public bool hidden, clip, noShrink;
+            public int minWidth = -1;
+        }
+
+        static System.Collections.Generic.List<NodeSpec> RandomTree(System.Random random, int count)
+        {
+            var nodes = new System.Collections.Generic.List<NodeSpec>();
+            nodes.Add(new NodeSpec { display = 2, width = 380 });
+            for (int i = 1; i < count; i++)
+            {
+                int parent;
+                do { parent = random.Next(i); } while (nodes[parent].text);
+                var node = new NodeSpec { parent = parent, text = random.Next(3) == 0 };
+                if (node.text)
+                {
+                    node.content = RandomWords(random);
+                }
+                else
+                {
+                    node.display = random.Next(3);
+                    node.wrap = random.Next(4) == 0;
+                    node.align = random.Next(3);
+                    RandomSizes(random, node);
+                }
+                nodes.Add(node);
+            }
+            return nodes;
+        }
+
+        static string RandomWords(System.Random random)
+        {
+            int words = 1 + random.Next(4);
+            string text = "";
+            for (int w = 0; w < words; w++) text += (w > 0 ? " " : "") + new string('a', 1 + random.Next(6));
+            return text;
+        }
+
+        static void RandomSizes(System.Random random, NodeSpec node)
+        {
+            int kind = random.Next(5);
+            node.width = kind == 0 ? 20 + random.Next(120) : kind == 1 ? -2 : -1;
+            node.height = random.Next(4) == 0 ? 10 + random.Next(60) : -1;
+            node.padding = random.Next(3) * 3;
+            node.margin = random.Next(3) * 2;
+            node.gap = random.Next(3) * 4;
+            node.grow = random.Next(3) == 0 ? 1f : 0f;
+            node.position = random.Next(8) == 0 ? 1 + random.Next(2) : 0;
+            node.hidden = random.Next(10) == 0;
+            node.clip = random.Next(6) == 0;
+            node.noShrink = random.Next(4) == 0;
+            node.minWidth = random.Next(6) == 0 ? random.Next(80) : -1;
+        }
+
+        static System.Collections.Generic.List<Element> BuildTree(MenUIContext ui, System.Collections.Generic.List<NodeSpec> spec)
+        {
+            var elements = new System.Collections.Generic.List<Element>();
+            foreach (var node in spec)
+            {
+                Element e;
+                if (node.text)
+                {
+                    e = new FakeText(ui, node.content);
+                }
+                else
+                {
+                    Box box = ui.Div();
+                    ApplySpec(box, node);
+                    e = box;
+                }
+                elements.Add(e);
+                if (node.parent >= 0) elements[node.parent].AppendChild(e);
+            }
+            return elements;
+        }
+
+        static void ApplySpec(Box box, NodeSpec node)
+        {
+            if (node.display == 0) box.Display(DisplayMode.Block);
+            else box.Flex().FlexDirection(node.display == 1 ? Direction.Row : Direction.Column);
+            box.FlexWrap(node.wrap ? MenUI.WrapMode.Wrap : MenUI.WrapMode.NoWrap);
+            box.AlignItems(node.align == 0 ? Align.Stretch : node.align == 1 ? Align.Start : Align.Center);
+            box.Width(node.width == -1 ? Length.Auto : node.width == -2 ? Length.Percent(50) : (Length)node.width);
+            box.Height(node.height < 0 ? Length.Auto : (Length)node.height);
+            box.Padding(node.padding).Margin(node.margin).Gap(node.gap).FlexGrow(node.grow);
+            box.FlexShrink(node.noShrink ? 0f : 1f);
+            box.MinWidth(node.minWidth < 0 ? Length.Auto : (Length)node.minWidth);
+            box.Overflow(node.clip ? OverflowMode.Hidden : OverflowMode.Visible);
+            if (node.hidden && node.display == 0) box.Display(DisplayMode.None);
+            box.Position(node.position == 0 ? PositionMode.Relative : PositionMode.Absolute);
+            if (node.position == 2) box.Inset(3);
+            else if (node.position == 1) box.Left(5).Top(7).Right(Length.Auto).Bottom(Length.Auto);
+            else box.Left(Length.Auto).Top(Length.Auto).Right(Length.Auto).Bottom(Length.Auto);
+        }
+
+        static void Mutate(System.Random random, System.Collections.Generic.List<NodeSpec> spec, System.Collections.Generic.List<Element> elements)
+        {
+            int changes = 1 + random.Next(3);
+            for (int c = 0; c < changes; c++)
+            {
+                int i = random.Next(spec.Count);
+                var node = spec[i];
+                if (node.text)
+                {
+                    node.content = RandomWords(random);
+                    ((FakeText)elements[i]).Set(node.content);
+                }
+                else if (i > 0)
+                {
+                    if (random.Next(3) == 0) node.display = random.Next(3);
+                    else RandomSizes(random, node);
+                    ApplySpec((Box)elements[i], node);
+                }
+            }
+        }
 
         public static int Main()
         {
@@ -294,7 +818,9 @@ namespace MenUI
                 var w = ui.Signal((Length)10);
                 Box inner = ui.Div().Height(10).Width(() => w.Value);
                 Box innerSibling = ui.Div().Size(10, 10);
-                Box fixedBox = ui.Div().Row().Size(100, 50).Children(inner, innerSibling);
+                // flex-shrink 0: a fixed size its content cannot change (a
+                // shrinkable flex item has a content-based minimum).
+                Box fixedBox = ui.Div().Row().Size(100, 50).FlexShrink(0).Children(inner, innerSibling);
                 Box outsideA = ui.Div().Size(30, 30);
                 Box outsideB = ui.Div().Size(30, 30);
                 Layout(ui, ui.Div().Row().Gap(5).Children(outsideA, fixedBox, outsideB));
@@ -305,6 +831,20 @@ namespace MenUI
                 Check("boundary: outside untouched", outsideB.X == before, R(outsideB));
                 Check("boundary: only the boundary subtree arranged", ui.layout.arrangedCount == 3, "arranged=" + ui.layout.arrangedCount);
                 Check("queue drained", ui.layoutQueue.Count == 0 && !fixedBox.queuedForLayout);
+            }
+
+            // ---- a fixed-size flex item still shrinks to its content minimum ----
+            {
+                var ui = NewContext(1f, 200, 200);
+                var tall = ui.Signal(true);
+                Box content = ui.Div().Width(10).Height(() => tall.Value ? (Length)60 : 20);
+                Box item = ui.Div().Size(50, 80).Children(content);          // min-height: auto = min(80, content)
+                Box other = ui.Div().Height(60).FlexShrink(0);
+                Layout(ui, ui.Div().Column().Height(100).Children(item, other));
+                Check("content minimum: before", item.Height == 60, R(item));   // shrunk from 80 to its content
+                tall.Value = false;
+                Relayout(ui);
+                Check("content minimum: follows the content", item.Height == 40 && other.Y == 40, R(item) + R(other));
             }
 
             // ---- a size change on a boundary itself reaches its parent ----
@@ -541,7 +1081,7 @@ namespace MenUI
                 Box bar = ui.Scrollbar(scroll).Height(100);
                 Layout(ui, ui.Div().Row().Children(view, bar));
                 Relayout(ui);
-                Check("min-height on a tiny thumb", bar.children[0].Height == 24, R(bar.children[0]));
+                Check("min-height on a tiny thumb", bar.children[0].Height == 32, R(bar.children[0]));
             }
 
 
@@ -1198,6 +1738,7 @@ namespace MenUI
                 Check("button: click", clicks.Peek() == 1);
 
                 Click(ui, CenterX(ui, checkbox), CenterY(ui, checkbox));
+                Settle(ui);
                 Check("checkbox: click toggles, class and look follow", agreed.Peek()
                     && checkbox.children[0].HasClass("checked")
                     && checkbox.children[0].computed.ColorOf(StyleProperty.Background) == Theme.Light.Accent);
@@ -1235,26 +1776,33 @@ namespace MenUI
 
                 Click(ui, CenterX(ui, select), CenterY(ui, select));
                 Check("select: click opens the menu on the overlay", select.HasClass("open") && ui.overlayRoot.children.Count == 1);
+                Settle(ui);
                 Element layer = ui.overlayRoot.children[0];
                 Element menu = layer.children[0];
                 Check("select: menu under the select, as wide", menu.X == select.X && menu.Y >= select.Y + select.Height
                     && menu.Width == select.Width, R(menu) + " vs " + R(select));
                 Element banana = menu.children[1];
                 Click(ui, CenterX(ui, banana), CenterY(ui, banana));
+                Check("select: the menu fades out", ui.overlayRoot.children.Count == 1 && !select.HasClass("open"));
+                Settle(ui);
                 Check("select: choosing sets the value and closes", fruit.Peek() == "Banana" && ui.overlayRoot.children.Count == 0
                     && !select.HasClass("open"));
                 Click(ui, CenterX(ui, select), CenterY(ui, select));
+                Settle(ui);
                 Click(ui, 590, 790);
+                Settle(ui);
                 Check("select: a press elsewhere closes", ui.overlayRoot.children.Count == 0 && fruit.Peek() == "Banana");
 
                 dialogOpen.Value = true;
                 Refresh(ui);
+                Settle(ui);
                 Element backdrop = ui.overlayRoot.children.Count == 1 ? ui.overlayRoot.children[0] : null;
                 Check("dialog: opens on the overlay, centered", backdrop != null && backdrop.Width == 600
                     && backdrop.children[0].X == (600 - backdrop.children[0].Width) / 2, backdrop != null ? R(backdrop.children[0]) : "");
                 Click(ui, 300, 400);
                 Check("dialog: a click inside keeps it open", dialogOpen.Peek());
                 Click(ui, 10, 10);
+                Settle(ui);
                 Check("dialog: a click on the backdrop closes it", !dialogOpen.Peek() && ui.overlayRoot.children.Count == 0);
 
                 ui.Toast("Hello", 1f);
@@ -1262,10 +1810,13 @@ namespace MenUI
                 Element stack = ui.overlayRoot.children.Count > 0 ? ui.overlayRoot.children[ui.overlayRoot.children.Count - 1] : null;
                 Check("toast: shown", stack != null && stack.tag == "toast-stack" && stack.children[0].children.Count == 1);
                 Frames(ui, 70);
+                Check("toast: fading out after its time", stack.children[0].children.Count == 1);
+                Frames(ui, 30);
                 Check("toast: gone after its time", stack.children[0].children.Count == 0);
 
                 ui.SetTheme(Theme.Dark);
                 Refresh(ui);
+                Settle(ui);
                 Check("theme: existing components restyle", button.computed.ColorOf(StyleProperty.Background) == Theme.Dark.Accent
                     && inBlock.computed.ColorOf(StyleProperty.Background) == Theme.Dark.Surface);
                 var themeSeen = Theme.Light.Background;
@@ -1283,6 +1834,7 @@ namespace MenUI
                 Frames(ui, 30);
                 Check("tooltip: shown after resting", ui.overlayRoot.children.Count == overlaysBefore + 1);
                 Pointer(ui, 590, 10, false);
+                Settle(ui);
                 Check("tooltip: hidden when the pointer leaves", ui.overlayRoot.children.Count == overlaysBefore);
             }
 
@@ -1302,6 +1854,60 @@ namespace MenUI
                 Check("scrolled content: local pointer positions include the scroll", Mathf.Abs(value.Peek() - 30f) < 0.5f
                     && screenX < slider.X, $"value {value.Peek()} at x {screenX} (layout x {slider.X})");
             }
+
+            // ---- live resize ----
+            {
+                var ui = NewContext(1f, 400, 300);
+                Box full = ui.Div().FullWidth().Height(50);
+                Box padded = ui.Div().Padding(10).Children(new FakeText(ui, "abc"));
+                Box moved = ui.Div().Size(20, 20).Translate(5f, 0f);
+                var state = ui.ScrollState();
+                ScrollView view = ui.ScrollView(state).Size(100, 50);
+                view.Children(ui.Div().Height(300));
+                Layout(ui, ui.Div().Children(full, padded, moved, view));
+                state.ScrollTo(0f, 40f);
+                Relayout(ui);
+                ui.groups.Resolve();
+                Check("resize: before", full.Width == 400 && padded.Height == 30 && view.Width == 100);
+
+                ui.Resize(600, 300, 1f);
+                Relayout(ui);
+                Check("resize: layout follows the new width", full.Width == 600, R(full));
+
+                ui.Resize(600, 300, 2f);
+                Relayout(ui);
+                ui.groups.Resolve();
+                Check("resize: the scale snaps lengths again", full.Width == 600 && full.Height == 100
+                    && padded.Height == 40 + 10 && view.Width == 200, R(full) + " " + R(padded) + " " + R(view));
+                Check("resize: translation follows the scale", ui.groups.offsets[moved.group].x == 10f,
+                    ui.groups.offsets[moved.group].x.ToString());
+                Check("resize: scroll offset follows the scale", ui.groups.offsets[view.children[0].group].y == -80f,
+                    ui.groups.offsets[view.children[0].group].y.ToString());
+                Check("resize: logical size", ui.LogicalWidth == 300f && ui.LogicalHeight == 150f);
+            }
+
+            // ---- scroll area: a bar beside the content, only when needed ----
+            {
+                var ui = NewContext(1f, 300, 200);
+                var scroll = ui.ScrollState();
+                Box content = ui.Div().Height(100);
+                Box area = ui.ScrollArea(scroll, content).FullSize();
+                Layout(ui, area);
+                Relayout(ui);
+                Element bar = area.children[1];
+                Check("scroll area: no bar while it all fits", bar.computed.Display == DisplayMode.None && content.Width == 300, R(content));
+                content.Height(1000);
+                Relayout(ui);
+                Relayout(ui);
+                Check("scroll area: the bar takes its own room", bar.computed.Display != DisplayMode.None
+                    && bar.Width == 12 && bar.X == 300 - 2 - 12 && content.Width == 300 - 16 && bar.Height == 196,
+                    R(bar) + " " + R(content));
+                Check("scroll area: the bar uses the theme", bar.children[0].computed.ColorOf(StyleProperty.Background) == Theme.Light.BorderHover);
+            }
+
+            AnimationTests();
+            TransitionTests();
+            CutoffTests();
 
             Console.WriteLine(failures == 0 ? "ALL PASSED" : failures + " FAILED");
             return failures;

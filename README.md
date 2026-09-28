@@ -33,12 +33,19 @@ renderer, text shaping) is set up automatically.
 - **Layout** — block and flexbox (grow/shrink with CSS's freeze-and-redistribute,
   wrap, justify/align, gap, `min-*: auto`), absolute/relative positioning,
   `overflow: hidden`, `z-index` stacking contexts and an overlay layer; logical
-  pixels (fractions allowed) snapped to whole physical pixels.
+  pixels (fractions allowed) snapped to whole physical pixels. Incremental: a
+  change is laid out again only as far up as sizes actually change.
+- **Animation** — CSS-style transitions (states, classes, bindings, style
+  sheets), `:enter-from` / `:exit-to` for things appearing and leaving, tweens
+  with any cubic Bézier, springs, keyframes, and animated values for anything
+  else.
 - **Drawing** — rounded borders, box shadows (inset too), opacity, text through
   TextMeshPro's dynamic atlases (Japanese included), all in one GPU draw;
   incremental: only changed records are rewritten.
 - **Scrolling** — `ScrollView` + separate `Scrollbar` sharing a `ScrollState`,
-  `ScrollArea`, momentum; scrolling and `Translate` move content on the GPU
+  `ScrollArea` (a view with its bar beside it), momentum. In VRChat the mouse
+  wheel turns the view, so the bar (drag the thumb, press the track to page)
+  and dragging the content are how players scroll; scrolling and `Translate` move content on the GPU
   without layout. `VirtualList` for long lists.
 - **Input** — device-independent routing (hit testing, capture, bubbling
   events, drag and drop) behind `IPointerSource`; a desktop source is included.
@@ -89,6 +96,55 @@ shadowed); what is typed is read back into the signal. There is no caret: the
 editing happens in VRChat's UI. Style boxes with the `input` / `textarea`
 tags (`:hover`, `:focus`, `:disabled`); MenUI's defaults are the lowest rules.
 
+## Animation
+
+```csharp
+// Transitions: changes animate instead of jumping — from :hover, classes,
+// bindings or rules alike.
+sheet.Rule("card", s => s.Background(gray).BorderRadius(8)
+        .Transition(TransitionGroup.Colors, AnimationSpec.Tween(0.15f, Easing.EaseOut))
+        .Transition(TransitionGroup.Corners, AnimationSpec.Spring(380f, 0.7f)))
+     .Rule("card:hover", s => s.Background(blue).BorderRadius(24));
+Div().Width(() => open.Value ? 320 : 56).Transition(StyleProperty.Width, AnimationSpec.Spring());
+
+// Appearing and leaving (Show, Dynamic and For wait for the exit).
+Div().EnterFrom(s => s.Opacity(0).MarginTop(-8)).ExitTo(s => s.Opacity(0))
+     .Transition(TransitionGroup.All, AnimationSpec.Tween(0.2f));
+
+// Values: read .Value in bindings; Translate moves on the GPU.
+AnimatedFloat x = Animated(0f);
+dot.Translate(() => x.Value, () => 0f);
+x.AnimateTo(200f, AnimationSpec.Tween(0.6f, Easing.CubicBezier(0.34f, 1.56f, 0.64f, 1f)));
+x.Play(new Keyframes(0f).To(1f, 0.2f).Hold(0.3f).To(0f, 0.5f), loop: true);
+AnimatedColor tint = Animated(Colors.White);
+Animate(0.5f, t => progress.Value = t, Easing.EaseInOut);   // or EveryFrame(dt => ...)
+```
+
+`AnimationSpec` is how a value moves: `Tween(seconds, easing)` (CSS's named
+curves, `Easing.CubicBezier(...)` or `Easing.Custom(t => ...)`) or
+`Spring(stiffness, dampingRatio)` — a spring keeps its velocity when the target
+changes midway, so interrupted animations never jump. `.Delay(seconds)` on
+either.
+
+What each frame costs depends on what moves: `Translate` and scrolling move
+on the GPU (no layout, no repaint); colors, radii and opacity rewrite only the
+records of the element (opacity: its subtree); lengths lay out again, but
+only as far up as a size changes — keep an animated size inside a box of fixed
+size (a relayout boundary: pixel width and height, and `flex-shrink: 0` for a
+flex item) and the rest of the panel is not touched. Transitions write the
+moving values straight into the computed style (no signals, no restyling),
+except inherited ones (text color, font size), which children must follow.
+Shadows, enums and fonts do not animate. A fading subtree keeps its draw
+records at zero opacity, so fading in and out never repaints everything.
+
+## Live resizing
+
+`ResizePanel(width, height, scale)` (or editing **bufferWidth**, **bufferHeight**
+and **scale** in the inspector while playing) resizes a running panel: a
+bigger pixel size makes a bigger panel whose layout reflows; a bigger scale
+zooms the content, drawn sharp. `resizePivot` is the point that stays in
+place. The render texture keeps spare room, so animating the size is cheap.
+
 ## Fonts
 
 MenUI ships Noto Sans JP (SIL Open Font License, see
@@ -105,7 +161,8 @@ sheet.Rule(".title", s => s.FontFamily("M PLUS Rounded, Noto Sans JP"));
 
 Package Manager › MenUI › Samples › **Demos**: a CSS tour, scrolling with a
 10,000-row virtual list, a drag-and-drop kanban board, a form with text
-boxes, and every built-in component with a theme switch.
+boxes, every built-in component with a theme switch, live resizing, and
+animation (transitions, enter and exit, curves, keyframes).
 
 ## Developing MenUI
 

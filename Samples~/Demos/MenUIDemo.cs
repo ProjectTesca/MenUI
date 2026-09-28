@@ -11,6 +11,7 @@ public class MenUIDemo : MenUIApp
     protected override Element Build()
     {
         count = Signal(0);
+        SetTheme(Theme.Dark);   // the built-in parts (the scrollbar) on a dark page
         Computed<bool> many = Computed(() => count.Value >= 5);
 
         Color surface = Colors.Hex(0x1E293B);

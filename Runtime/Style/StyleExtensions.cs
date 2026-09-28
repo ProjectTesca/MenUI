@@ -194,6 +194,38 @@ namespace MenUI
             return self;
         }
 
+        // ---- transitions ---------------------------------------------------------------------
+
+        /// CSS `transition`: changes to `property` — a StyleProperty or a
+        /// TransitionGroup — animate with `animation` instead of jumping, from
+        /// whatever the element shows at that moment. Changes that come from
+        /// states (`:hover`), classes, bindings and style sheets all animate.
+        ///   .Transition(StyleProperty.Background, AnimationSpec.Tween(0.15f))
+        ///   .Transition(TransitionGroup.Colors, AnimationSpec.Spring(1600f, 1f))
+        public static T Transition<T>(this T self, int property, AnimationSpec animation) where T : IStyleTarget
+        {
+            Style style = self.StyleForWriting;
+            bool changed = false;
+            for (int i = 0; i < StyleProperty.Count; i++)
+            {
+                if (StyleTransitions.InGroup(i, property) && style.SetTransition(i, animation))
+                {
+                    changed = true;
+                }
+            }
+            if (changed)
+            {
+                self.StyleWritten(StyleProperty.Count);
+            }
+            return self;
+        }
+
+        /// CSS `transition: all`: every property that can animate does.
+        public static T Transition<T>(this T self, AnimationSpec animation) where T : IStyleTarget
+        {
+            return Transition(self, TransitionGroup.All, animation);
+        }
+
         // ---- composition ---------------------------------------------------------------------
 
         /// Copies every property `style` sets (later calls still override).
@@ -204,6 +236,10 @@ namespace MenUI
             for (int i = 0; i < style.setCount; i++)
             {
                 self.StyleWritten(style.setOrder[i]);
+            }
+            if (style.transitions != null)
+            {
+                self.StyleWritten(StyleProperty.Count);
             }
             return self;
         }
@@ -283,6 +319,21 @@ namespace MenUI
         /// `:disabled` variant.
         public static T Disabled<T>(this T self, Action<Style> configure) where T : Element { return Variant(self, PseudoState.Disabled, configure); }
 
+        /// `:enter-from` variant: where the element starts when it appears
+        /// (CSS `@starting-style`). Its transitions take it from there to
+        /// its style: `.EnterFrom(s => s.Opacity(0)).Transition(AnimationSpec.Tween(0.2f))`.
+        public static T EnterFrom<T>(this T self, Action<Style> configure) where T : Element { return Variant(self, PseudoState.EnterFrom, configure); }
+
+        /// `:exit-to` variant: where the element goes when the Show, Dynamic
+        /// or For that shows it removes it. It stays until its transitions
+        /// have played (still taking pointer input meanwhile):
+        /// `.ExitTo(s => s.Opacity(0)).Transition(AnimationSpec.Tween(0.2f))`.
+        public static T ExitTo<T>(this T self, Action<Style> configure) where T : Element
+        {
+            self.context.RegisterExit(self);
+            return Variant(self, PseudoState.ExitTo, configure);
+        }
+
         internal static T Variant<T>(T self, int state, Action<Style> configure) where T : Element
         {
             configure(self.GetOrCreateVariant(state));
@@ -321,7 +372,7 @@ namespace MenUI
             int owned = self.translateGroup;
             context.Bind(() =>
             {
-                float scale = context.scale;
+                float scale = context.TrackedScale;
                 context.groups.SetOffset(owned, Mathf.Round(x() * scale), Mathf.Round(y() * scale));
             });
             return self;
