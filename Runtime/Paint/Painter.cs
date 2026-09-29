@@ -36,8 +36,12 @@ namespace MenUI
         internal const float KindOuterShadow = 3f;
         internal const float KindInsetShadow = 4f;
         internal const float KindImage = 5f;   // reserved: images and custom-shader surfaces
+        internal const float KindRipple = 6f;
+        internal const float KindShape = 7f;
+        internal const float KindArc = 8f;
+        internal const float KindWave = 9f;
         /// The record's kind texel holds kind + GroupStride * transform group.
-        internal const float GroupStride = 8f;
+        internal const float GroupStride = 16f;
 
         private readonly PanelRenderer renderer;
         private int generation;
@@ -91,7 +95,7 @@ namespace MenUI
                     // ancestor's records or the structure too.
                     continue;
                 }
-                float opacity = AncestorOpacity(e) * e.computed.Opacity;
+                float opacity = AncestorOpacity(e) * OwnOpacity(e);
                 keepTransparent = FadesInTree(e);
                 bool draw = opacity > 0f || keepTransparent;
                 renderer.BeginOverwrite(e.boxRecordStart, e.boxRecordCount);
@@ -130,11 +134,11 @@ namespace MenUI
             keepTransparent = false;
             if (root.computed.Display != DisplayMode.None)
             {
-                PaintContext(root, root.computed.Opacity);
+                PaintContext(root, OwnOpacity(root));
             }
             if (overlayRoot.computed.Display != DisplayMode.None)
             {
-                PaintContext(overlayRoot, overlayRoot.computed.Opacity);
+                PaintContext(overlayRoot, OwnOpacity(overlayRoot));
             }
         }
 
@@ -200,14 +204,14 @@ namespace MenUI
             for (; index < contexts.Count && contexts[index].computed.ZIndex < 0; index++)
             {
                 Element child = contexts[index];
-                PaintContext(child, AncestorOpacity(child) * child.computed.Opacity);
+                PaintContext(child, AncestorOpacity(child) * OwnOpacity(child));
             }
             PaintOwnContent(context, opacity);
             PaintFlowChildren(context, opacity);
             for (; index < contexts.Count; index++)
             {
                 Element child = contexts[index];
-                PaintContext(child, AncestorOpacity(child) * child.computed.Opacity);
+                PaintContext(child, AncestorOpacity(child) * OwnOpacity(child));
             }
         }
 
@@ -236,7 +240,7 @@ namespace MenUI
                 {
                     continue;
                 }
-                PaintFlow(child, opacity * child.computed.Opacity);
+                PaintFlow(child, opacity * OwnOpacity(child));
             }
         }
 
@@ -277,12 +281,19 @@ namespace MenUI
             }
         }
 
+        /// The opacity the records carry: none for an element with a
+        /// transform group, whose opacity the GPU applies (see UpdateLayer).
+        private static float OwnOpacity(Element e)
+        {
+            return e.translateGroup != TransformGroups.Root ? 1f : e.computed.Opacity;
+        }
+
         private static float AncestorOpacity(Element e)
         {
             float opacity = 1f;
             for (Element a = e.parent; a != null; a = a.parent)
             {
-                opacity *= a.computed.Opacity;
+                opacity *= OwnOpacity(a);
             }
             return opacity;
         }
@@ -299,11 +310,11 @@ namespace MenUI
                 return;
             }
             float x = e.x, y = e.y, width = e.width, height = e.height;
-            float half = Mathf.Min(width, height) * 0.5f;
-            float radiusTopLeft = Mathf.Min(s.Resolve(StyleProperty.CornerTopLeft, (int)Mathf.Min(width, height), 0), half);
-            float radiusTopRight = Mathf.Min(s.Resolve(StyleProperty.CornerTopRight, (int)Mathf.Min(width, height), 0), half);
-            float radiusBottomRight = Mathf.Min(s.Resolve(StyleProperty.CornerBottomRight, (int)Mathf.Min(width, height), 0), half);
-            float radiusBottomLeft = Mathf.Min(s.Resolve(StyleProperty.CornerBottomLeft, (int)Mathf.Min(width, height), 0), half);
+            Vector4 radii = CornerRadii(e);
+            float radiusTopLeft = radii.x;
+            float radiusTopRight = radii.y;
+            float radiusBottomRight = radii.z;
+            float radiusBottomLeft = radii.w;
 
             Shadow[] shadows = s.shadows;
 
@@ -401,6 +412,28 @@ namespace MenUI
             }
         }
 
+        /// The element's corner radii in physical px (tl, tr, br, bl), each at
+        /// most half its shorter side. Animated radii may be fractional.
+        internal static Vector4 CornerRadii(Element e)
+        {
+            ComputedStyle s = e.computed;
+            float shorter = Mathf.Min(e.width, e.height);
+            float half = shorter * 0.5f;
+            return new Vector4(
+                Mathf.Min(Corner(s, StyleProperty.CornerTopLeft, shorter), half),
+                Mathf.Min(Corner(s, StyleProperty.CornerTopRight, shorter), half),
+                Mathf.Min(Corner(s, StyleProperty.CornerBottomRight, shorter), half),
+                Mathf.Min(Corner(s, StyleProperty.CornerBottomLeft, shorter), half));
+        }
+
+        private static float Corner(ComputedStyle s, int property, float reference)
+        {
+            int unit = s.units[property];
+            if (unit == (int)LengthUnit.Pixels) return s.numbers[property];
+            if (unit == (int)LengthUnit.Percent) return s.numbers[property] * 0.01f * reference;
+            return 0f;
+        }
+
         private static bool HasStateStyles(Element e)
         {
             return e.stateRuleMask != 0 || e.hoverStyle != null || e.activeStyle != null || e.focusStyle != null
@@ -446,6 +479,129 @@ namespace MenUI
                 renderer.Texel(record, 3, glyphs[o + 4], glyphs[o + 5], glyphs[o + 6], glyphs[o + 7]);
                 renderer.Texel(record, 4, KindGlyph + GroupStride * e.group, glyphs[o + 8], 0f, 0f);
             }
+        }
+
+        // ================================================================
+        // Graphics (see Graphic): ripples, shapes, arcs, lines. Each is one
+        // record, drawn even when transparent (a steady record count).
+        // Coordinates are physical px in layout space.
+        // ================================================================
+
+        /// A circle clipped to a rounded box (`box` x, y, width, height and
+        /// its `radii`), with a soft edge of `soft` px.
+        internal void Ripple(Element e, float centerX, float centerY, float radius, float soft,
+            Vector4 box, Vector4 radii, Color color, float opacity)
+        {
+            int record = Begin(e, box.x, box.y, box.z, box.w);
+            if (record < 0) return;
+            renderer.Texel(record, 2, Premultiplied(color, opacity));
+            renderer.Texel(record, 3, radii.x, radii.y, radii.z, radii.w);
+            renderer.Texel(record, 4, KindRipple + GroupStride * e.group, 0f, 0f, 0f);
+            renderer.Texel(record, 6, centerX, centerY, Mathf.Max(0f, radius), soft);
+            renderer.Texel(record, 7, box.x, box.y, box.z, box.w);
+        }
+
+        /// A shape of the morphing family filling the square centered in
+        /// the rectangle: `from` morphed toward `to` by `morph` (0..1), the
+        /// whole turned by `rotation` radians.
+        internal void Shape(Element e, float x, float y, float width, float height, ShapeSpec from, ShapeSpec to,
+            float morph, float rotation, Color color, float opacity)
+        {
+            int record = Begin(e, x - 1f, y - 1f, width + 2f, height + 2f);
+            if (record < 0) return;
+            renderer.Texel(record, 2, Premultiplied(color, opacity));
+            renderer.Texel(record, 3, from.kind, from.count, from.amount, from.rotation * Mathf.Deg2Rad);
+            renderer.Texel(record, 4, KindShape + GroupStride * e.group, 0f, 0f, 0f);
+            // A spring may overshoot a little past either shape.
+            renderer.Texel(record, 5, Mathf.Clamp(morph, -0.3f, 1.3f), rotation, 0f, 0f);
+            renderer.Texel(record, 6, to.kind, to.count, to.amount, to.rotation * Mathf.Deg2Rad);
+            renderer.Texel(record, 7, x, y, width, height);
+        }
+
+        /// A stroked arc with round caps (angles in radians from the top,
+        /// clockwise), optionally wavy.
+        internal void Arc(Element e, float centerX, float centerY, float radius, float thickness, float start, float sweep,
+            float amplitude, float waves, float phase, Color color, float opacity)
+        {
+            float reach = radius + Mathf.Abs(amplitude) + thickness * 0.5f + 1f;
+            int record = Begin(e, centerX - reach, centerY - reach, reach * 2f, reach * 2f);
+            if (record < 0) return;
+            renderer.Texel(record, 2, Premultiplied(color, opacity));
+            renderer.Texel(record, 3, amplitude, waves, phase, 0f);
+            renderer.Texel(record, 4, KindArc + GroupStride * e.group, 0f, 0f, 0f);
+            renderer.Texel(record, 6, radius, thickness, start, sweep);
+            renderer.Texel(record, 7, centerX - radius, centerY - radius, radius * 2f, radius * 2f);
+        }
+
+        /// A stroked horizontal line from x0 to x1 with round caps,
+        /// optionally wavy (amplitude, wavelength, phase in radians).
+        internal void Line(Element e, float x0, float x1, float y, float thickness,
+            float amplitude, float wavelength, float phase, Color color, float opacity)
+        {
+            float reachX = thickness * 0.5f + 1f;
+            float reachY = Mathf.Abs(amplitude) + thickness * 0.5f + 1f;
+            int record = Begin(e, x0 - reachX, y - reachY, (x1 - x0) + reachX * 2f, reachY * 2f);
+            if (record < 0) return;
+            renderer.Texel(record, 2, Premultiplied(color, opacity));
+            renderer.Texel(record, 3, amplitude, wavelength, phase, 0f);
+            renderer.Texel(record, 4, KindWave + GroupStride * e.group, 0f, 0f, 0f);
+            renderer.Texel(record, 6, x0, x1, y, thickness);
+        }
+
+        /// Replays a Graphic's commands (logical px from its content box).
+        internal void PaintGraphic(Graphic g, float opacity)
+        {
+            GraphicCanvas canvas = g.canvas;
+            List<float> n = canvas.numbers;
+            float scale = g.context.scale;
+            float ox = g.contentX, oy = g.contentY;
+            for (int i = 0; i < canvas.count; i++)
+            {
+                int o = i * GraphicCanvas.FloatsPerCommand;
+                int kind = (int)n[o];
+                Color color = canvas.colors[i];
+                if (kind == GraphicCanvas.CommandRipple)
+                {
+                    Element clip = g.clipToParent && g.parent != null ? g.parent : g;
+                    Vector4 box = new Vector4(clip.x, clip.y, clip.width, clip.height);
+                    Ripple(g, ox + n[o + 1] * scale, oy + n[o + 2] * scale, n[o + 3] * scale, n[o + 4] * scale,
+                        box, CornerRadii(clip), color, opacity);
+                }
+                else if (kind == GraphicCanvas.CommandShape)
+                {
+                    Shape(g, ox + n[o + 1] * scale, oy + n[o + 2] * scale, n[o + 3] * scale, n[o + 4] * scale,
+                        canvas.shapes[i * 2], canvas.shapes[i * 2 + 1], n[o + 5], n[o + 6], color, opacity);
+                }
+                else if (kind == GraphicCanvas.CommandArc)
+                {
+                    Arc(g, ox + n[o + 1] * scale, oy + n[o + 2] * scale, n[o + 3] * scale, n[o + 4] * scale,
+                        n[o + 5], n[o + 6], n[o + 7] * scale, n[o + 8], n[o + 9], color, opacity);
+                }
+                else if (kind == GraphicCanvas.CommandLine)
+                {
+                    Line(g, ox + n[o + 1] * scale, ox + n[o + 2] * scale, oy + n[o + 3] * scale, n[o + 4] * scale,
+                        n[o + 5] * scale, n[o + 6] * scale, n[o + 7], color, opacity);
+                }
+                else
+                {
+                    float width = n[o + 3] * scale, height = n[o + 4] * scale;
+                    float half = Mathf.Min(width, height) * 0.5f;
+                    Box(g, new Vector4(ox + n[o + 1] * scale, oy + n[o + 2] * scale, width, height),
+                        new Vector4(Mathf.Min(n[o + 5] * scale, half), Mathf.Min(n[o + 6] * scale, half),
+                            Mathf.Min(n[o + 7] * scale, half), Mathf.Min(n[o + 8] * scale, half)), color, opacity);
+                }
+            }
+        }
+
+        /// A rounded rectangle (x, y, width, height, radii), no border.
+        internal void Box(Element e, Vector4 box, Vector4 radii, Color color, float opacity)
+        {
+            int record = Begin(e, box.x, box.y, box.z, box.w);
+            if (record < 0) return;
+            renderer.Texel(record, 2, Premultiplied(color, opacity));
+            renderer.Texel(record, 3, radii.x, radii.y, radii.z, radii.w);
+            renderer.Texel(record, 4, KindRoundedRectangle + GroupStride * e.group, 0f, 0f, 0f);
+            renderer.Texel(record, 7, box.x, box.y, box.z, box.w);
         }
 
         /// Starts a record with its quad and the element's clip; -1 when the

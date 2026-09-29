@@ -63,6 +63,8 @@ namespace MenUI
         private Theme theme = MenUI.Theme.Light;
         private Signal<Theme> themeSignal;
         internal int reconcileStamp;
+        /// Per-panel state of add-ons (MaterialDesign.Of keeps its instance here).
+        internal readonly Dictionary<string, object> extensions = new Dictionary<string, object>();
         /// The set or order of records changes: repaint everything.
         internal bool paintStructureDirty = true;
 
@@ -335,6 +337,35 @@ namespace MenUI
             overlayRoot.MarkStyleDirty();
         }
 
+        /// Adds a style sheet right after MenUI's built-in one, below every
+        /// sheet added so far (a design system's defaults, which your own
+        /// sheets override).
+        internal void AddDefaultStyleSheet(StyleSheet sheet)
+        {
+            if (styleSheets.Contains(sheet))
+            {
+                return;
+            }
+            styleSheets.Insert(1, sheet);
+            for (int i = 0; i < styleSheets.Count; i++)
+            {
+                styleSheets[i].order = i;
+            }
+            root.subtreeStyleDirty = true;
+            root.MarkStyleDirty();
+            overlayRoot.subtreeStyleDirty = true;
+            overlayRoot.MarkStyleDirty();
+        }
+
+        /// Everything matches its rules again (a sheet's rules were replaced).
+        internal void RematchStyles()
+        {
+            root.subtreeStyleDirty = true;
+            root.MarkStyleDirty();
+            overlayRoot.subtreeStyleDirty = true;
+            overlayRoot.MarkStyleDirty();
+        }
+
         internal bool IsAncestorClass(string name)
         {
             for (int i = 0; i < styleSheets.Count; i++)
@@ -387,6 +418,71 @@ namespace MenUI
                     animating.RemoveAt(i);
                 }
             }
+        }
+
+        // ---- layers (GPU transform groups for transforms and fades) ----------------
+
+        /// Gives `e` a transform group while its style needs one — translated,
+        /// scaled, or with a fade or transform animating — and releases it
+        /// after. With a group, translate, scale and opacity are applied by
+        /// the GPU: changing them neither lays out nor repaints.
+        internal void UpdateLayer(Element e)
+        {
+            bool needs = e.computed.IsTransformed || (e.animator != null && e.animator.AnimatesLayer());
+            if (e.translateGroup == TransformGroups.Root)
+            {
+                if (!needs)
+                {
+                    return;
+                }
+                int group = groups.Allocate();
+                if (group == TransformGroups.Root)
+                {
+                    return;   // none left: drawn untransformed, opacity by the painter
+                }
+                e.translateGroup = group;
+                e.styleLayer = true;
+                // Its subtree now draws into the group (and its opacity moves
+                // there): arranged and drawn again once.
+                e.MarkLayoutDirty(false);
+                if (!e.layerCleanupRegistered && e.owner != null)
+                {
+                    e.layerCleanupRegistered = true;
+                    e.owner.OnCleanup(() => ReleaseLayer(e));
+                }
+            }
+            else if (!needs && e.styleLayer)
+            {
+                ReleaseLayer(e);
+                return;
+            }
+            SyncLayer(e);
+        }
+
+        internal void ReleaseLayer(Element e)
+        {
+            if (!e.styleLayer || e.translateGroup == TransformGroups.Root)
+            {
+                return;
+            }
+            groups.SetStyleTransform(e.translateGroup, 0f, 0f, 1f, 1f);
+            groups.Free(e.translateGroup);
+            e.translateGroup = TransformGroups.Root;
+            e.styleLayer = false;
+            e.MarkLayoutDirty(false);
+        }
+
+        /// Hands the element's translate, scale and opacity to its group.
+        internal void SyncLayer(Element e)
+        {
+            int group = e.translateGroup;
+            if (group == TransformGroups.Root)
+            {
+                return;
+            }
+            ComputedStyle s = e.computed;
+            groups.SetStyleTransform(group, s.numbers[StyleProperty.TranslateX], s.numbers[StyleProperty.TranslateY],
+                s.Scale, s.Opacity);
         }
 
         /// Whether `e` is in the panel's tree (or the overlay's).
@@ -508,6 +604,13 @@ namespace MenUI
             TextElement element = new TextElement(this, string.Empty);
             Bind(() => element.SetContent(content()));
             return element;
+        }
+
+        /// Draws shapes, arcs, lines and ripples (see Graphic); `draw` reruns
+        /// when a signal it read changes.
+        public Graphic Graphic(Action<GraphicCanvas> draw)
+        {
+            return new Graphic(this, draw);
         }
 
         /// A one-line text box editing `value` (CSS `input`).
@@ -721,6 +824,89 @@ namespace MenUI
             return region;
         }
 
+        /// Shows page `index()` of `pages` (tabs, steps). Each page is built
+        /// the first time it is shown and then kept: switching back only
+        /// hides and shows it — no rebuild, no restyle, its layout cached —
+        /// far cheaper than Dynamic, for the memory (and running bindings) of
+        /// the hidden pages. With `preload`, the other pages are built ahead,
+        /// one per frame, so even a first visit is quick.
+        public Region Pages(Func<int> index, params Func<Element>[] pages)
+        {
+            return Pages(index, false, pages);
+        }
+
+        public Region Pages(Func<int> index, bool preload, params Func<Element>[] pages)
+        {
+            Region region = new Region(this);
+            Owner scope = runtime.currentOwner;
+            // Each page sits in a holder: `display: contents` when shown (the
+            // page lays out as the region's child), `none` when hidden.
+            Box[] holders = new Box[pages.Length];
+            int shown = -1;
+            Action<int> build = i =>
+            {
+                if (i < 0 || i >= pages.Length || holders[i] != null)
+                {
+                    return;
+                }
+                Box holder = Div().Display(DisplayMode.None);
+                Owner owner = new Owner(runtime, scope);
+                Element built = null;
+                runtime.RunWithOwner(owner, () => { built = pages[i](); });
+                holder.Child(built);
+                holders[i] = holder;
+                region.AppendChild(holder);
+            };
+            Effect watcher = new Effect(runtime, scope, () =>
+            {
+                int current = index();
+                if (current == shown)
+                {
+                    return;
+                }
+                build(current);
+                if (shown >= 0 && shown < holders.Length && holders[shown] != null)
+                {
+                    holders[shown].Display(DisplayMode.None);
+                }
+                if (current >= 0 && current < holders.Length && holders[current] != null)
+                {
+                    holders[current].Display(DisplayMode.Contents);
+                }
+                shown = current;
+            });
+            watcher.Run();
+            if (preload)
+            {
+                // After a short wait (the first frames are busy enough), one
+                // page per frame; then it stops.
+                int next = 0;
+                float wait = 0.5f;
+                Playback preloader = null;
+                preloader = EveryFrame(dt =>
+                {
+                    wait -= dt;
+                    if (wait > 0f)
+                    {
+                        return;
+                    }
+                    while (next < pages.Length && holders[next] != null)
+                    {
+                        next++;
+                    }
+                    if (next < pages.Length)
+                    {
+                        build(next);
+                    }
+                    else
+                    {
+                        preloader.Stop();
+                    }
+                });
+            }
+            return region;
+        }
+
         /// Ends a scope that showed something: its elements with `:exit-to`
         /// styles (in the tree, displayed) get that state, and once their
         /// transitions have played, `owner` is disposed and `remove` runs.
@@ -925,14 +1111,14 @@ namespace MenUI
         }
 
         /// Where an element is on the panel now, in logical pixels (its
-        /// layout box moved by scrolling and translation).
+        /// layout box mapped by scrolling, translation and scale).
         internal void LogicalRect(Element e, out float left, out float top, out float width, out float height)
         {
-            Vector4 offset = groups.offsets[e.group];
-            left = (e.x + offset.x) / scale;
-            top = (e.y + offset.y) / scale;
-            width = e.width / scale;
-            height = e.height / scale;
+            float zoom = groups.ScaleOf(e.group);
+            left = groups.ScreenX(e.group, e.x) / scale;
+            top = groups.ScreenY(e.group, e.y) / scale;
+            width = e.width * zoom / scale;
+            height = e.height * zoom / scale;
         }
 
         // ---- scrolling ---------------------------------------------------------------

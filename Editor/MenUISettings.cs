@@ -1,7 +1,9 @@
 // The project's MenUI settings: the font registry.
 //
-// Entry 0 is always the default font, Noto Sans JP (shipped with MenUI). Add
-// entries to use other fonts, by family name, from code and style sheets:
+// Entry 0 is always the default font, Noto Sans JP (shipped with MenUI); the
+// icon fonts "Material Symbols Rounded" and "Material Symbols Rounded Filled"
+// are always there too. Add entries to use other fonts, by family name, from
+// code and style sheets:
 //
 //   Text("Hello").FontFamily("Inter");
 //   sheet.Rule(".title", s => s.FontFamily("M PLUS Rounded, Noto Sans JP"));
@@ -176,13 +178,13 @@ namespace MenUI.Editor
             assets.Clear();
             families.Add(PackageAssets.DefaultFontFamily);
             assets.Add(PackageAssets.DefaultFontAsset());
+            PackageAssets.IconFonts(families, assets);
             MenUISettings settings = Find();
             if (settings == null)
             {
                 return;
             }
-            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            seen.Add(PackageAssets.DefaultFontFamily);
+            HashSet<string> seen = new HashSet<string>(families, StringComparer.OrdinalIgnoreCase);
             for (int i = 1; i < settings.fonts.Count; i++)
             {
                 FontEntry entry = settings.fonts[i];
@@ -203,6 +205,10 @@ namespace MenUI.Editor
             {
                 into.Add(defaultFont);
             }
+            List<string> iconFamilies = new List<string>();
+            List<TMP_FontAsset> iconAssets = new List<TMP_FontAsset>();
+            PackageAssets.IconFonts(iconFamilies, iconAssets);
+            into.AddRange(iconAssets);
             MenUISettings settings = Find();
             if (settings == null)
             {

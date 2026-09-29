@@ -15,8 +15,29 @@ namespace MenUI
         /// Per property, how changes animate; only read while `hasTransitions`.
         internal AnimationSpec[] transitions;
         internal bool hasTransitions;
+        /// The properties with a transition (the first `transitionCount`).
+        internal int[] transitionList;
+        internal int transitionCount;
 
-        internal void Reset()
+        /// Back to the initial values of `defaults` (see FillDefaults): a few
+        /// bulk copies — resolving runs this for every restyled element.
+        internal void Reset(ComputedStyle defaults)
+        {
+            System.Array.Copy(defaults.numbers, numbers, StyleProperty.Count);
+            System.Array.Copy(defaults.units, units, StyleProperty.Count);
+            System.Array.Copy(defaults.colors, colors, StyleProperty.Count);
+            System.Array.Copy(defaults.isSet, isSet, StyleProperty.Count);
+            shadows = null;
+            for (int i = 0; i < transitionCount; i++)
+            {
+                transitions[transitionList[i]] = null;
+            }
+            transitionCount = 0;
+            hasTransitions = false;
+        }
+
+        /// The CSS initial values (once, into a template that Reset copies).
+        internal void FillDefaults()
         {
             for (int i = 0; i < StyleProperty.Count; i++)
             {
@@ -25,14 +46,6 @@ namespace MenUI
                 isSet[i] = false;
             }
             shadows = null;
-            if (hasTransitions)
-            {
-                for (int i = 0; i < StyleProperty.Count; i++)
-                {
-                    transitions[i] = null;
-                }
-                hasTransitions = false;
-            }
 
             numbers[StyleProperty.Display] = (int)DisplayMode.Block;
             numbers[StyleProperty.Direction] = (int)Direction.Row;
@@ -60,6 +73,7 @@ namespace MenUI
             numbers[StyleProperty.TextAlign] = (int)TextAlignMode.Start;
             units[StyleProperty.ZIndex] = (int)LengthUnit.Auto;
             numbers[StyleProperty.Opacity] = 1f;
+            numbers[StyleProperty.Scale] = 1f;
             colors[StyleProperty.Background] = new Color(0f, 0f, 0f, 0f);
             colors[StyleProperty.BorderColor] = new Color(0f, 0f, 0f, 1f);
             colors[StyleProperty.TextColor] = new Color(0f, 0f, 0f, 1f);
@@ -111,20 +125,28 @@ namespace MenUI
                 numbers[StyleProperty.FontFamily] = context != null ? context.ResolveFontFamily(style.fontFamily) : 0;
                 units[StyleProperty.FontFamily] = (int)LengthUnit.Pixels;
             }
-            AnimationSpec[] specified = style.transitions;
-            if (specified != null)
+            int count = style.transitionCount;
+            if (count > 0)
             {
                 if (transitions == null)
                 {
                     transitions = new AnimationSpec[StyleProperty.Count];
+                    transitionList = new int[StyleProperty.Count];
                 }
-                for (int i = 0; i < StyleProperty.Count; i++)
+                for (int i = 0; i < count; i++)
                 {
-                    if (specified[i] != null)
+                    AnimationSpec spec = style.transitionSpecs[i];
+                    if (spec == null)
                     {
-                        transitions[i] = specified[i];
-                        hasTransitions = true;
+                        continue;
                     }
+                    int property = style.transitionProperties[i];
+                    if (transitions[property] == null)
+                    {
+                        transitionList[transitionCount++] = property;
+                    }
+                    transitions[property] = spec;
+                    hasTransitions = true;
                 }
             }
         }
@@ -140,7 +162,8 @@ namespace MenUI
         private static bool IsPixelLength(int property)
         {
             return (property >= StyleProperty.FlexBasis && property <= StyleProperty.FontSize)
-                || (property >= StyleProperty.CornerTopLeft && property <= StyleProperty.CornerBottomLeft);
+                || (property >= StyleProperty.CornerTopLeft && property <= StyleProperty.CornerBottomLeft)
+                || property == StyleProperty.TranslateX || property == StyleProperty.TranslateY;
         }
 
         private static float SnapLength(int property, float logical, float scale)
@@ -189,6 +212,16 @@ namespace MenUI
         internal bool HasZIndex { get { return units[StyleProperty.ZIndex] != (int)LengthUnit.Auto; } }
         internal int ZIndex { get { return HasZIndex ? (int)numbers[StyleProperty.ZIndex] : 0; } }
         internal float Opacity { get { return numbers[StyleProperty.Opacity]; } }
+        internal float Scale { get { return numbers[StyleProperty.Scale]; } }
+        /// Translated or scaled (CSS translate / scale other than none).
+        internal bool IsTransformed
+        {
+            get
+            {
+                return numbers[StyleProperty.TranslateX] != 0f || numbers[StyleProperty.TranslateY] != 0f
+                    || numbers[StyleProperty.Scale] != 1f;
+            }
+        }
         internal bool IsVisible { get { return (int)numbers[StyleProperty.Visibility] == (int)VisibilityMode.Visible; } }
         internal float FontSize { get { return numbers[StyleProperty.FontSize]; } }
         /// Index into the panel's fonts (0: the default, Noto Sans JP).

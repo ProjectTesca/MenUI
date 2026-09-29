@@ -107,6 +107,15 @@ namespace MenUI
         /// Whether the box is being edited now.
         public bool IsEditing { get { return target.focused; } }
 
+        /// Runs when editing starts (true) and ends (false).
+        public TextBox OnFocusChange(Action<bool> handler)
+        {
+            focusChanged += handler;
+            return this;
+        }
+
+        private Action<bool> focusChanged;
+
         // ---- input (from the host) -----------------------------------------------------
 
         internal void ApplyInput(string text)
@@ -130,6 +139,11 @@ namespace MenUI
         {
             context.textInput.FocusChanged(target, isFocused);
             SetPseudoState(PseudoState.Focus, isFocused);
+            if (focusChanged != null)
+            {
+                Action<bool> handler = focusChanged;
+                context.runtime.Batch(() => handler(isFocused));
+            }
             if (!isFocused && !canceled && committed != null)
             {
                 string text = value.Peek();

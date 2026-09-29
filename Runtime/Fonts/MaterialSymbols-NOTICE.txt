@@ -1,0 +1,9 @@
+Material Symbols Rounded — Copyright Google LLC, Apache License 2.0
+(see MaterialSymbols-LICENSE.txt). Source: https://github.com/google/material-design-icons
+(variablefont/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf).
+
+Modified for MenUI: two static instances of the variable font were made with
+fontTools (weight 400, grade 0, optical size 24; fill 0 for
+MaterialSymbolsRounded.ttf, fill 1 for MaterialSymbolsRounded-Filled.ttf),
+the layout tables (ligatures) were removed — icons are used by code point —
+and the filled instance was renamed "Material Symbols Rounded Filled".

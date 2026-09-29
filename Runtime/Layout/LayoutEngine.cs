@@ -306,7 +306,8 @@ namespace MenUI
             // clipped it becomes the group's clip, not its records' clip.
             if (e.translateGroup > TransformGroups.Root)
             {
-                groups.SetFrame(e.translateGroup, incomingGroup, clipLeft, clipTop, clipRight, clipBottom);
+                groups.SetFrame(e.translateGroup, incomingGroup, clipLeft, clipTop, clipRight, clipBottom,
+                    x + width * 0.5f, y + height * 0.5f);
                 e.group = e.translateGroup;
                 clipLeft = -TransformGroups.Unbounded;
                 clipTop = -TransformGroups.Unbounded;
@@ -507,8 +508,10 @@ namespace MenUI
                     width = Mathf.Max(availableWidth, MinContentWidth(e));
                 }
                 width = Mathf.Max(ClampWidth(s, width, availableWidth), horizontalEdges);
-                if (width - horizontalEdges == contentWidth && e.IsLeaf)
+                if (width - horizontalEdges == contentWidth && (e.IsLeaf || (fitShortcut && IsPlainRow(s))))
                 {
+                    // At exactly its max-content width, a leaf or a single
+                    // flex row lays out as it did for max-content: no second pass.
                     contentHeight = maxContentHeight;
                 }
                 else
@@ -523,6 +526,20 @@ namespace MenUI
             resultWidth = width;
             resultHeight = height;
             StoreMeasure(e, availableWidth, exactWidth, availableHeight, width, height);
+        }
+
+        internal bool fitShortcut = true;   // tests compare with and without
+
+        /// A flex row that does not wrap: at its max-content width every item
+        /// gets its max-content size, as when measured unconstrained.
+        private static bool IsPlainRow(ComputedStyle s)
+        {
+            if (s.Display != DisplayMode.Flex || s.Enum(StyleProperty.Wrap) == (int)WrapMode.Wrap)
+            {
+                return false;
+            }
+            Direction direction = (Direction)s.Enum(StyleProperty.Direction);
+            return direction == Direction.Row || direction == Direction.RowReverse;
         }
 
         /// Content size inside the content box. Returns the content height and

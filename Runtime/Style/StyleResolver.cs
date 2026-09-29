@@ -11,6 +11,15 @@ namespace MenUI
         private readonly float[] previousNumbers = new float[StyleProperty.Count];
         private readonly int[] previousUnits = new int[StyleProperty.Count];
         private readonly UnityEngine.Color[] previousColors = new UnityEngine.Color[StyleProperty.Count];
+        // The initial values every resolve starts from (copied in bulk).
+        private readonly ComputedStyle defaults = NewDefaults();
+
+        private static ComputedStyle NewDefaults()
+        {
+            ComputedStyle template = new ComputedStyle();
+            template.FillDefaults();
+            return template;
+        }
 
         /// Resolves the queued elements, shallowest first. Descendants are
         /// only visited when they must be: an inherited value changed, or the
@@ -195,7 +204,7 @@ namespace MenUI
         /// all in `states`), the inline style, then the state variants.
         private void Cascade(Element element, ComputedStyle parent, ComputedStyle computed, int states, float scale)
         {
-            computed.Reset();
+            computed.Reset(defaults);
             if (parent != null)
             {
                 computed.InheritFrom(parent);
@@ -227,12 +236,9 @@ namespace MenUI
         private bool Resolve(Element element, ComputedStyle parent, float scale)
         {
             ComputedStyle computed = element.computed;
-            for (int i = 0; i < StyleProperty.Count; i++)
-            {
-                previousNumbers[i] = computed.numbers[i];
-                previousUnits[i] = computed.units[i];
-                previousColors[i] = computed.colors[i];
-            }
+            System.Array.Copy(computed.numbers, previousNumbers, StyleProperty.Count);
+            System.Array.Copy(computed.units, previousUnits, StyleProperty.Count);
+            System.Array.Copy(computed.colors, previousColors, StyleProperty.Count);
 
             int states = element.pseudoStates;
             Cascade(element, parent, computed, states, scale);
@@ -252,6 +258,11 @@ namespace MenUI
             }
             element.styleResolvedOnce = true;
             element.styleDirty = false;
+            if (element.translateGroup != TransformGroups.Root || computed.IsTransformed
+                || (element.animator != null && element.animator.IsRunning))
+            {
+                currentContext.UpdateLayer(element);
+            }
 
             bool layoutChanged = previousNumbers[StyleProperty.FontFamily] != computed.numbers[StyleProperty.FontFamily];
             for (int i = 0; i < StyleProperty.FirstPaintOnly; i++)
@@ -266,9 +277,11 @@ namespace MenUI
             {
                 element.MarkLayoutDirty(true);
             }
-            if (previousNumbers[StyleProperty.Opacity] != computed.numbers[StyleProperty.Opacity])
+            if (previousNumbers[StyleProperty.Opacity] != computed.numbers[StyleProperty.Opacity]
+                && element.translateGroup == TransformGroups.Root)
             {
-                // Opacity is multiplied into every descendant's records.
+                // Opacity is multiplied into every descendant's records (with
+                // a transform group, the GPU applies it instead).
                 element.MarkSubtreePaintDirty();
             }
             else

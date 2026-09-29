@@ -283,6 +283,7 @@ namespace MenUI
         protected TextElement Text(string content) { return ui.Text(content); }
         protected TextElement Text(Func<string> content) { return ui.Text(content); }
         protected TextBox TextBox(Signal<string> value) { return ui.TextBox(value); }
+        protected Graphic Graphic(Action<GraphicCanvas> draw) { return ui.Graphic(draw); }
         protected TextBox TextArea(Signal<string> value) { return ui.TextArea(value); }
         protected Signal<T> Signal<T>(T initial) { return ui.Signal(initial); }
         protected Computed<T> Computed<T>(Func<T> compute) { return ui.Computed(compute); }
@@ -296,6 +297,8 @@ namespace MenUI
         protected void OnCleanup(Action cleanup) { ui.OnCleanup(cleanup); }
         protected Region Show(Func<bool> condition, Func<Element> then, Func<Element> otherwise = null) { return ui.Show(condition, then, otherwise); }
         protected Region Dynamic(Func<Element> build) { return ui.Dynamic(build); }
+        protected Region Pages(Func<int> index, params Func<Element>[] pages) { return ui.Pages(index, pages); }
+        protected Region Pages(Func<int> index, bool preload, params Func<Element>[] pages) { return ui.Pages(index, preload, pages); }
         protected Region Overlay(Func<Element> content) { return ui.Overlay(content); }
         protected Element Mount(Component component) { return ui.Mount(component); }
         protected void AddStyleSheet(StyleSheet sheet) { ui.AddStyleSheet(sheet); }

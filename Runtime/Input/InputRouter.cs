@@ -67,7 +67,7 @@ namespace MenUI
         private int CountBefore(Element container, float pointer, bool horizontal)
         {
             int count = 0;
-            Vector4[] offsets = context.groups.offsets;
+            TransformGroups groups = context.groups;
             for (int i = 0; i < container.children.Count; i++)
             {
                 Element child = container.children[i];
@@ -76,8 +76,8 @@ namespace MenUI
                     count += CountBefore(child, pointer, horizontal);
                     continue;
                 }
-                Vector4 offset = offsets[child.group];
-                float middle = horizontal ? child.x + offset.x + child.width * 0.5f : child.y + offset.y + child.height * 0.5f;
+                float middle = horizontal ? groups.ScreenX(child.group, child.x + child.width * 0.5f)
+                    : groups.ScreenY(child.group, child.y + child.height * 0.5f);
                 if (middle < pointer)
                 {
                     count++;
@@ -360,8 +360,8 @@ namespace MenUI
         /// group's offset, and only inside the group's clip.
         private Element HitTest(float x, float y, Element excluded)
         {
-            Vector4[] offsets = context.groups.offsets;
-            Vector4[] clips = context.groups.clips;
+            TransformGroups groups = context.groups;
+            Vector4[] clips = groups.clips;
             for (int i = hitList.Count - 1; i >= 0; i--)
             {
                 Element e = hitList[i];
@@ -374,9 +374,8 @@ namespace MenUI
                     {
                         continue;
                     }
-                    Vector4 offset = offsets[group];
-                    localX = x - offset.x;
-                    localY = y - offset.y;
+                    localX = groups.LocalX(group, x);
+                    localY = groups.LocalY(group, y);
                 }
                 if (localX >= e.x && localY >= e.y && localX < e.x + e.width && localY < e.y + e.height
                     && localX >= e.clipLeft && localY >= e.clipTop && localX < e.clipRight && localY < e.clipBottom
@@ -424,13 +423,13 @@ namespace MenUI
                 runtime.RunWithOwner(owner, () => { preview = config.preview(); });
                 if (preview != null)
                 {
-                    Vector4 offset = context.groups.offsets[source.group];
                     float scale = context.scale;
+                    float zoom = context.groups.ScaleOf(source.group);
                     preview.Absolute()
-                        .Left((source.x + offset.x) / scale).Top((source.y + offset.y) / scale)
+                        .Left(ScreenX(source) / scale).Top(ScreenY(source) / scale)
                         .PointerEvents(PointerEventsMode.None);
-                    if (!preview.inlineStyle.isSet[StyleProperty.Width]) preview.Width(source.width / scale);
-                    if (!preview.inlineStyle.isSet[StyleProperty.Height]) preview.Height(source.height / scale);
+                    if (!preview.inlineStyle.isSet[StyleProperty.Width]) preview.Width(source.width * zoom / scale);
+                    if (!preview.inlineStyle.isSet[StyleProperty.Height]) preview.Height(source.height * zoom / scale);
                     context.overlayRoot.AppendChild(preview);
                     previewOwner[slot] = owner;
                     moved = preview;
@@ -582,8 +581,10 @@ namespace MenUI
             pointerEvent.PointerId = slotPointerId[slot];
             pointerEvent.X = x / scale;
             pointerEvent.Y = y / scale;
-            pointerEvent.LocalX = current != null ? (x - ScreenX(current)) / scale : 0f;
-            pointerEvent.LocalY = current != null ? (y - ScreenY(current)) / scale : 0f;
+            // In the element's own (unscaled) logical pixels.
+            float zoom = current != null ? context.groups.ScaleOf(current.group) : 1f;
+            pointerEvent.LocalX = current != null ? (x - ScreenX(current)) / (scale * zoom) : 0f;
+            pointerEvent.LocalY = current != null ? (y - ScreenY(current)) / (scale * zoom) : 0f;
             pointerEvent.Target = eventTarget;
             pointerEvent.CurrentTarget = current;
             pointerEvent.ScrollDelta = 0f;
@@ -592,15 +593,15 @@ namespace MenUI
         }
 
         // Where an element is on the panel (physical px): its layout position
-        // moved by its transform group (scrolling, translation).
+        // mapped by its transform group (scrolling, translation, scale).
         private float ScreenX(Element e)
         {
-            return e.x + context.groups.offsets[e.group].x;
+            return context.groups.ScreenX(e.group, e.x);
         }
 
         private float ScreenY(Element e)
         {
-            return e.y + context.groups.offsets[e.group].y;
+            return context.groups.ScreenY(e.group, e.y);
         }
 
         private static Element ScrollViewAbove(Element e)

@@ -104,16 +104,39 @@ namespace MenUI.Editor
             {
                 return;
             }
+            List<string> families = null;
             foreach (MenUIApp app in PanelsInOpenScenes())
             {
+                if (families == null)
+                {
+                    families = new List<string>();
+                    MenUISettings.RegisteredFonts(families, new List<TMP_FontAsset>());
+                }
                 if (app.shapingTexts == null || app.shapingTexts.Length == 0 || app.shapingTexts[0] == null
                     || app.renderCamera == null || app.quadPoolRenderer == null || app.displayRenderer == null
                     || app.textInputFields == null || app.textInputFields.Length == 0 || app.textInputFields[0] == null
-                    || app.textInputCanvas == null)
+                    || app.textInputCanvas == null || !SameFamilies(app.fontFamilies, families))
                 {
                     SetUp(app);
                 }
             }
+        }
+
+        /// The panel has the registry's fonts (new bundled fonts reach old panels).
+        private static bool SameFamilies(string[] panel, List<string> registry)
+        {
+            if (panel == null || panel.Length != registry.Count)
+            {
+                return false;
+            }
+            for (int i = 0; i < panel.Length; i++)
+            {
+                if (panel[i] != registry[i])
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         private static List<MenUIApp> PanelsInOpenScenes()

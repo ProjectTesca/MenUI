@@ -25,8 +25,10 @@ renderer, text shaping) is set up automatically.
 
 ## Features
 
-- **Reactivity** — `Signal`, `Computed`, `Effect`, `Show`, `Dynamic`, keyed `For`;
-  components run once, bindings are lambdas, only what changed updates.
+- **Reactivity** — `Signal`, `Computed`, `Effect`, `Show`, `Dynamic`, keyed `For`,
+  `Pages` (tabs: each page built once and kept, so switching back is only a
+  hide and a show; optionally built ahead); components run once, bindings
+  are lambdas, only what changed updates.
 - **Styling** — chained CSS properties (`.Padding(16).BorderRadius(12)`), `Style`
   objects, style sheets with classes, descendant/child selectors and
   `:hover` `:active` `:focus` `:disabled` `:dragging` `:drag-over`.
@@ -55,6 +57,9 @@ renderer, text shaping) is set up automatically.
 - **Components** — buttons, check boxes, switches, radio buttons, sliders,
   progress bars, spinners, tabs, selects, dialogs, tooltips and toasts, with
   light and dark themes.
+- **Material Design 3** — the M3 Expressive components, color schemes (from
+  one seed color too), shapes, springs and Material Symbols icons
+  (`MenUI.Material3`).
 
 ## Components
 
@@ -137,6 +142,56 @@ except inherited ones (text color, font size), which children must follow.
 Shadows, enums and fonts do not animate. A fading subtree keeps its draw
 records at zero opacity, so fading in and out never repaints everything.
 
+## Material Design 3
+
+```csharp
+using MenUI.Material3;
+
+public class MyMenu : MaterialApp            // or MenUIApp + MaterialDesign.Of(UI)
+{
+    protected override Element Build()
+    {
+        var going = Signal(0);
+        return M3.Surface().FullSize().Padding(24).Column().Gap(16).Children(
+            M3.Text("Hello", TypeRole.HeadlineSmall),
+            M3.Button("Save", MaterialSymbol.Check).OnClick(Save),
+            M3.SegmentedGroup(going, new[] { "Going", "Maybe" }),
+            M3.LinearProgress(() => progress.Value, wavy: true),
+            M3.Fab(MaterialSymbol.Add, FabSize.Large));
+    }
+}
+```
+
+Components (M3 Expressive): buttons in five sizes (round or square, toggles
+that morph between them), icon buttons, FABs, extended FABs, the FAB menu,
+button groups (standard and connected), split buttons, floating and docked
+toolbars, linear and circular progress (flat or wavy), the loading
+indicator, checkbox, radio, switch, slider, text fields (filled, outlined),
+chips, cards, lists, dividers, badges, tabs, navigation bar, navigation rail
+(narrow ↔ wide), top app bars, menus, dialogs, snackbars and tooltips.
+
+- Colors: `M3.SetColorScheme(MaterialColorScheme.BaselineDark)`, or
+  `MaterialColorScheme.FromSeed(color, dark)` (tonal palettes like
+  Material's "tonal spot", computed in CIELAB — close to, not exactly,
+  Material's own HCT results), or any scheme you fill in. Changing it
+  animates.
+- Motion: `M3.SetMotionScheme(MotionScheme.Expressive)` (the default, a
+  little bouncy) or `MotionScheme.Standard`.
+- Icons: `MaterialSymbol.*` (Material Symbols Rounded; `M3.Icon(symbol,
+  filled: true)`).
+- Everything is plain elements with `m3-...` tags; the look is a style sheet
+  under yours, so your rules override it.
+- MenUI has one font weight, so the type scale sets sizes only.
+
+## Transforms and graphics
+
+`.Translate(x, y)` and `.Scale(s)` are style properties applied by the GPU
+(no layout, no repaint), and they transition like any other; an element
+that moves, scales or fades gets a transform group of its own while it does,
+so its opacity is applied by the GPU as well. `Graphic(g => ...)` draws what
+boxes cannot — arcs, wavy lines, ripples, and shapes that morph
+(`ShapeSpec.Cookie9`, `Sunny`, `Pentagon`, ...) — rerunning like a binding.
+
 ## Live resizing
 
 `ResizePanel(width, height, scale)` (or editing **bufferWidth**, **bufferHeight**
@@ -148,7 +203,10 @@ place. The render texture keeps spare room, so animating the size is cheap.
 ## Fonts
 
 MenUI ships Noto Sans JP (SIL Open Font License, see
-`Runtime/Fonts/NotoSansJP-OFL.txt`) as the default font. To add fonts, open
+`Runtime/Fonts/NotoSansJP-OFL.txt`) as the default font, and the icon fonts
+"Material Symbols Rounded" and "Material Symbols Rounded Filled" (Apache
+License 2.0; static instances of Google's variable font, without ligatures —
+see `Runtime/Fonts/MaterialSymbols-NOTICE.txt`). To add fonts, open
 **MenUI > Settings** and add an entry with a `.ttf`/`.otf` (or a TMP font
 asset); then use it by name:
 
@@ -161,8 +219,9 @@ sheet.Rule(".title", s => s.FontFamily("M PLUS Rounded, Noto Sans JP"));
 
 Package Manager › MenUI › Samples › **Demos**: a CSS tour, scrolling with a
 10,000-row virtual list, a drag-and-drop kanban board, a form with text
-boxes, every built-in component with a theme switch, live resizing, and
-animation (transitions, enter and exit, curves, keyframes).
+boxes, every built-in component with a theme switch, live resizing,
+animation (transitions, enter and exit, curves, keyframes), and Material
+Design 3 Expressive.
 
 ## Developing MenUI
 

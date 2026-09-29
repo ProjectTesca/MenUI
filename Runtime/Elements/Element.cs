@@ -119,6 +119,10 @@ namespace MenUI
         internal int childGroup;
         internal int incomingGroup;
         internal int translateGroup;
+        /// `translateGroup` was allocated for the style's transform or a fade
+        /// (see MenUIContext.UpdateLayer), and is freed when no longer needed.
+        internal bool styleLayer;
+        internal bool layerCleanupRegistered;
         internal bool queuedForLayout;
 
         // Where this element's draw records went in the last full paint, so a

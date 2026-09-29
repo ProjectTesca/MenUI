@@ -169,12 +169,12 @@ namespace MenUI
             int group = box.group;
             if (group != TransformGroups.Root)
             {
-                Vector4 offset = context.groups.offsets[group];
-                Vector4 clip = context.groups.clips[group];
-                left = Mathf.Max(left + offset.x, clip.x);
-                top = Mathf.Max(top + offset.y, clip.y);
-                right = Mathf.Min(right + offset.x, clip.z);
-                bottom = Mathf.Min(bottom + offset.y, clip.w);
+                TransformGroups groups = context.groups;
+                Vector4 clip = groups.clips[group];
+                left = Mathf.Max(groups.ScreenX(group, left), clip.x);
+                top = Mathf.Max(groups.ScreenY(group, top), clip.y);
+                right = Mathf.Min(groups.ScreenX(group, right), clip.z);
+                bottom = Mathf.Min(groups.ScreenY(group, bottom), clip.w);
             }
             if ((right <= left || bottom <= top) && !editing)
             {

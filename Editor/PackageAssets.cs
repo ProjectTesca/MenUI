@@ -1,6 +1,7 @@
 // Assets MenUI ships in its package, so a project that installs it needs
-// nothing generated of its own: the quad pool mesh, the panel materials and
-// the default font (Noto Sans JP, as a Dynamic TMP font asset).
+// nothing generated of its own: the quad pool mesh, the panel materials, the
+// default font (Noto Sans JP, as a Dynamic TMP font asset) and the icon fonts
+// (Material Symbols Rounded, outlined and filled).
 //
 // Each is created in the package on first use when missing — which only
 // happens while developing MenUI itself; the result is committed with the
@@ -26,6 +27,12 @@ namespace MenUI.Editor
         public const string DefaultFontFamily = "Noto Sans JP";
         private const string DefaultFontFile = FontsFolder + "/NotoSansJP-Regular.ttf";
         private const string DefaultFontAssetPath = FontsFolder + "/NotoSansJP-Regular SDF.asset";
+        /// The icon fonts every panel has (after the default font): Material
+        /// Symbols Rounded, outlined and filled, used by code point.
+        public const string IconFontFamily = "Material Symbols Rounded";
+        public const string FilledIconFontFamily = "Material Symbols Rounded Filled";
+        private const string IconFontFile = FontsFolder + "/MaterialSymbolsRounded.ttf";
+        private const string FilledIconFontFile = FontsFolder + "/MaterialSymbolsRounded-Filled.ttf";
 
         public const int RecordCapacity = 4096;
 
@@ -169,6 +176,35 @@ namespace MenUI.Editor
                 return null;
             }
             return CreateDynamicFontAsset(font, DefaultFontAssetPath);
+        }
+
+        /// The bundled icon fonts' families and font assets (made on first use).
+        public static void IconFonts(System.Collections.Generic.List<string> families, System.Collections.Generic.List<TMP_FontAsset> assets)
+        {
+            AddBundled(IconFontFamily, IconFontFile, families, assets);
+            AddBundled(FilledIconFontFamily, FilledIconFontFile, families, assets);
+        }
+
+        private static void AddBundled(string family, string file, System.Collections.Generic.List<string> families,
+            System.Collections.Generic.List<TMP_FontAsset> assets)
+        {
+            string assetPath = Path.ChangeExtension(file, null) + " SDF.asset";
+            TMP_FontAsset asset = AssetDatabase.LoadAssetAtPath<TMP_FontAsset>(assetPath);
+            if (asset == null)
+            {
+                Font font = AssetDatabase.LoadAssetAtPath<Font>(file);
+                if (font == null)
+                {
+                    Debug.LogError("[MenUI] the bundled icon font is missing: " + file);
+                    return;
+                }
+                asset = CreateDynamicFontAsset(font, assetPath);
+            }
+            if (asset != null)
+            {
+                families.Add(family);
+                assets.Add(asset);
+            }
         }
 
         /// The bundled font file itself (for uGUI text).

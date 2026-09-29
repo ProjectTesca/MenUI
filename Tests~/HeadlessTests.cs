@@ -1,5 +1,6 @@
 using System;
 using MenUI;
+using MenUI.Material3;
 using UnityEngine;
 
 namespace MenUI
@@ -123,6 +124,226 @@ namespace MenUI
         // Center of an element on the panel (physical px).
         static float CenterX(MenUIContext ui, Element e) => e.X + ui.groups.offsets[e.group].x + e.Width / 2f;
         static float CenterY(MenUIContext ui, Element e) => e.Y + ui.groups.offsets[e.group].y + e.Height / 2f;
+
+        // ---- GPU layers: translate, scale, opacity on transform groups ----
+        static void LayerTests()
+        {
+            {
+                var ui = NewContext(1f, 200, 200);
+                var zoomed = ui.Signal(false);
+                Box inner = ui.Div().Size(20, 20);
+                Box box = ui.Div().Size(100, 100).Margin(50).Children(inner)
+                    .Bind(e => e.Scale(zoomed.Value ? 0.5f : 1f));
+                Layout(ui, box);
+                Check("layer: none while untransformed", box.translateGroup == TransformGroups.Root);
+                zoomed.Value = true;
+                Relayout(ui);
+                ui.groups.Resolve();
+                int g = box.translateGroup;
+                Vector4 t = ui.groups.offsets[g];
+                // Scaled around its center (100, 100): layout 50 maps to 75.
+                Check("layer: a group while scaled", g != TransformGroups.Root && t.z == 0.5f
+                    && Near(ui.groups.ScreenX(g, 50f), 75f), t.ToString());
+                Check("layer: children draw in it", inner.group == g);
+                PublishPaintOrder(ui);
+                inner.OnClick(() => { });
+                ui.hitVersion++;
+                // The child at layout (50,50)-(70,70) is on screen at (75,75)-(85,85).
+                Pointer(ui, 80, 80, false);
+                Check("layer: hit testing maps through the scale", ui.router.HoverTarget(0) == inner);
+                zoomed.Value = false;
+                Relayout(ui);
+                Check("layer: released when back to normal", box.translateGroup == TransformGroups.Root && inner.group == TransformGroups.Root);
+            }
+
+            {
+                // A fade on a group: opacity goes to the GPU, and the group is
+                // given back when the fade ends.
+                var ui = NewContext(1f, 200, 200);
+                var visible = ui.Signal(true);
+                Box panel = ui.Div().Size(50, 50).Opacity(() => visible.Value ? 1f : 0f)
+                    .Transition(StyleProperty.Opacity, AnimationSpec.Tween(0.2f, Easing.Linear));
+                Layout(ui, panel);
+                visible.Value = false;
+                Relayout(ui);
+                Frames(ui, 6);
+                int g = panel.translateGroup;
+                float alpha = ui.groups.offsets[g].w;
+                Check("fade layer: opacity on the group", g != TransformGroups.Root && alpha > 0.3f && alpha < 0.7f, alpha.ToString());
+                Frames(ui, 20);
+                Check("fade layer: kept while transparent is fine, released once settled", panel.computed.Opacity == 0f
+                    && panel.translateGroup == TransformGroups.Root);
+            }
+
+            {
+                // Style translate animates on the GPU with a transition.
+                var ui = NewContext(1f, 200, 200);
+                var moved = ui.Signal(false);
+                Box box = ui.Div().Size(20, 20).Bind(e => e.TranslateX(moved.Value ? 100f : 0f))
+                    .Transition(StyleProperty.TranslateX, AnimationSpec.Tween(0.2f, Easing.Linear));
+                Layout(ui, box);
+                moved.Value = true;
+                Relayout(ui);
+                Frames(ui, 6);
+                float x = ui.groups.offsets[box.translateGroup].x;
+                Check("translate transition: moves on the GPU", x > 30f && x < 70f && ui.layout.arrangedCount == 0 && box.X == 0, x.ToString());
+                Frames(ui, 20);
+                Check("translate transition: arrives", ui.groups.offsets[box.translateGroup].x == 100f);
+            }
+
+            {
+                // Graphic: records commands reactively, re-records on resize.
+                var ui = NewContext(1f, 200, 200);
+                var p = ui.Signal(0.5f);
+                float seenWidth = -1f;
+                Graphic g = ui.Graphic(c =>
+                {
+                    seenWidth = c.Width;
+                    c.Line(0, c.Width * p.Value, 5, 4, Color.red);
+                    c.Circle(10, 10, 5, Color.blue);
+                }).Size(120, 10);
+                Layout(ui, g);
+                Check("graphic: recorded at its size", seenWidth == 120f && g.canvas.count == 2);
+                p.Value = 1f;
+                Check("graphic: reruns on a signal", g.canvas.numbers[2] == 120f);
+            }
+        }
+
+        // ---- Material 3 ----
+        static void MaterialTests()
+        {
+            {
+                MaterialColorScheme seeded = MaterialColorScheme.FromSeed(Colors.Hex(0x3B82F6));
+                float l, a, b;
+                MaterialColorScheme.Lab(seeded.Primary, out l, out a, out b);
+                float lc, ac, bc;
+                MaterialColorScheme.Lab(seeded.PrimaryContainer, out lc, out ac, out bc);
+                Check("scheme from seed: primary tone 40, container 90", Near(l, 40f, 1.5f) && Near(lc, 90f, 1.5f), l + " " + lc);
+                Check("scheme from seed: bluish primary", b < 0f && seeded.Primary.b > seeded.Primary.r, seeded.Primary.ToString());
+                MaterialColorScheme darkSeeded = MaterialColorScheme.FromSeed(Colors.Hex(0x3B82F6), true);
+                MaterialColorScheme.Lab(darkSeeded.Surface, out l, out a, out b);
+                Check("scheme from seed: dark surface", l < 10f && darkSeeded.IsDark, l.ToString());
+            }
+
+            {
+                var ui = NewContext(1f, 800, 600);
+                MaterialDesign m3 = MaterialDesign.Of(ui);
+                Check("material: one per panel", MaterialDesign.Of(ui) == m3 && ui.styleSheets[1] == m3.sheet);
+                var selected = ui.Signal(false);
+                Box filled = m3.Button("Save", MaterialSymbol.Check);
+                Box toggle = m3.ToggleButton(selected, "Like", MaterialSymbol.Favorite, ButtonStyle.Filled, ComponentSize.Medium);
+                Box icon = m3.IconButton(MaterialSymbol.Search, IconButtonStyle.Filled, ComponentSize.Large, IconButtonWidth.Wide);
+                Box row = ui.Div().Row().Gap(10).Padding(10).AlignItems(Align.Start).Children(filled, toggle, icon);
+                Layout(ui, row);
+                Settle(ui);
+                MaterialColorScheme c = MaterialColorScheme.BaselineLight;
+                Check("m3 button: filled colors and size", filled.computed.ColorOf(StyleProperty.Background) == c.Primary
+                    && filled.computed.ColorOf(StyleProperty.TextColor) == c.OnPrimary && filled.Height == 40, R(filled));
+                Check("m3 button: fully round", filled.computed.numbers[StyleProperty.CornerTopLeft] == 20f);
+                Check("m3 icon button: large wide", icon.Width == 128 && icon.Height == 96, R(icon));
+
+                // Hover: the state layer over the container.
+                Pointer(ui, CenterX(ui, filled), CenterY(ui, filled), false);
+                Settle(ui);
+                Color hover = filled.computed.ColorOf(StyleProperty.Background);
+                Check("m3 button: hover state layer", hover != c.Primary && Near(hover.r, c.Primary.r * 0.92f + c.OnPrimary.r * 0.08f, 0.01f),
+                    hover.ToString());
+                // Pressing morphs the corners (a spring toward 8).
+                Pointer(ui, CenterX(ui, filled), CenterY(ui, filled), true);
+                Settle(ui);
+                Check("m3 button: pressed corners", filled.computed.numbers[StyleProperty.CornerTopLeft] == 8f,
+                    filled.computed.numbers[StyleProperty.CornerTopLeft].ToString());
+                Pointer(ui, CenterX(ui, filled), CenterY(ui, filled), false);
+                Pointer(ui, 790, 590, false);
+                Settle(ui);
+
+                // Toggle: selected turns square and primary.
+                Click(ui, CenterX(ui, toggle), CenterY(ui, toggle));
+                Pointer(ui, 790, 590, false);   // away: no hover layer
+                Settle(ui);
+                Check("m3 toggle: selected, square", selected.Peek() && toggle.HasClass("selected")
+                    && toggle.computed.numbers[StyleProperty.CornerTopLeft] == 16f
+                    && toggle.computed.ColorOf(StyleProperty.Background) == c.Primary,
+                    toggle.computed.numbers[StyleProperty.CornerTopLeft].ToString());
+
+                // A new scheme restyles everything (with a transition).
+                m3.SetColorScheme(MaterialColorScheme.BaselineDark);
+                Relayout(ui);
+                Settle(ui);
+                Check("m3: scheme change", filled.computed.ColorOf(StyleProperty.Background) == MaterialColorScheme.BaselineDark.Primary);
+            }
+
+            {
+                var ui = NewContext(1f, 800, 600);
+                MaterialDesign m3 = MaterialDesign.Of(ui);
+                var on = ui.Signal(false);
+                var name = ui.Signal("");
+                Box sw = m3.Switch(on, "Wi-Fi");
+                Box field = m3.TextField(name, "Name");
+                Layout(ui, ui.Div().Column().Gap(10).Padding(10).Children(sw, field));
+                Settle(ui);
+                Element thumb = sw.children[0].children[0];
+                int thumbBefore = thumb.X;
+                Click(ui, CenterX(ui, sw), CenterY(ui, sw));
+                Settle(ui);
+                Check("m3 switch: the thumb moves and grows", on.Peek() && thumb.X > thumbBefore && thumb.Width == 24, R(thumb));
+                Element label = null;
+                foreach (Element child in field.children[0].children) if (child.tag == "m3-field-label") label = child;
+                int restingTop = label.Y;
+                name.Value = "Ann";
+                Relayout(ui);
+                Settle(ui);
+                Check("m3 text field: the label floats", label.Y < restingTop && label.computed.FontSize == 12f, R(label));
+            }
+
+            {
+                var ui = NewContext(1f, 800, 600);
+                MaterialDesign m3 = MaterialDesign.Of(ui);
+                var open = ui.Signal(false);
+                Box menu = m3.FabMenu(open, MaterialSymbol.Add,
+                    new FabMenuItem("One", MaterialSymbol.Star, null), new FabMenuItem("Two", MaterialSymbol.Star, null));
+                Layout(ui, ui.Div().Padding(20).Children(menu));
+                Settle(ui);
+                Element items = menu.children[0];
+                Element fab = menu.children[1];
+                int fabX = fab.X, fabY = fab.Y;
+                Check("fab menu: closed items are invisible", items.children[0].computed.Opacity == 0f);
+                open.Value = true;
+                Relayout(ui);
+                Settle(ui);
+                Check("fab menu: items appear", items.children[0].computed.Opacity == 1f && items.children[1].computed.Opacity == 1f);
+                Check("fab menu: the button stays put", fab.X == fabX && fab.Y == fabY, R(fab));
+                open.Value = false;
+                Relayout(ui);
+                Settle(ui);
+                Check("fab menu: items fade away, the button still in place", items.children[0].computed.Opacity == 0f
+                    && fab.X == fabX && fab.Y == fabY);
+
+                var expanded = ui.Signal(false);
+                var selected = ui.Signal(0);
+                Box rail = m3.NavigationRail(selected, expanded, new[] { "A", "B" }, new[] { MaterialSymbol.Home, MaterialSymbol.Map });
+                ui.root.children[0].AppendChild(rail);
+                Settle(ui);
+                Check("rail: narrow", rail.Width == 96, R(rail));
+                expanded.Value = true;
+                Relayout(ui);
+                Frames(ui, 4);
+                Check("rail: widening", rail.Width > 96 && rail.Width < 220, R(rail));
+                Settle(ui);
+                Check("rail: wide", rail.Width == 220, R(rail));
+
+                var progress = ui.Signal(0.5f);
+                Graphic linear = m3.LinearProgress(() => progress.Value, true);
+                Element loading = m3.LoadingIndicator(true);
+                ui.root.children[0].AppendChild(ui.Div().Width(300).Children(linear, loading));
+                Settle(ui);
+                int commands = linear.canvas.count;
+                progress.Value = 1f;
+                Check("linear progress: steady command count", commands == 3 && linear.canvas.count == 3);
+                Check("loading indicator: container and shape", ((Graphic)loading).canvas.count == 2);
+            }
+        }
+
 
         static bool Near(float a, float b, float tolerance = 0.001f) => Mathf.Abs(a - b) <= tolerance;
 
@@ -503,6 +724,34 @@ namespace MenUI
                 }
             }
             Check("cutoff: incremental layout matches a fresh layout", mismatches == 0, mismatches + " " + firstMismatch);
+
+            // The fit-content shortcut for flex rows gives the same layout as the full measure.
+            int differences = 0;
+            string firstDifference = "";
+            var shortcutRandom = new System.Random(99);
+            for (int round = 0; round < 300; round++)
+            {
+                var spec = RandomTree(shortcutRandom, 10 + shortcutRandom.Next(30));
+                var fast = NewContext(1f, 400, 400);
+                var fastElements = BuildTree(fast, spec);
+                Layout(fast, fastElements[0]);
+                var slow = NewContext(1f, 400, 400);
+                slow.layout.fitShortcut = false;
+                var slowElements = BuildTree(slow, spec);
+                Layout(slow, slowElements[0]);
+                for (int i = 0; i < spec.Count; i++)
+                {
+                    Element a = fastElements[i], b = slowElements[i];
+                    if (IsHidden(b)) continue;
+                    if (a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height)
+                    {
+                        if (differences == 0) firstDifference = $"round {round} node {i}: {R(a)} vs {R(b)}";
+                        differences++;
+                        break;
+                    }
+                }
+            }
+            Check("fit-content shortcut: same layout", differences == 0, differences + " " + firstDifference);
         }
 
         static bool IsHidden(Element e)
@@ -831,6 +1080,28 @@ namespace MenUI
                 Check("boundary: outside untouched", outsideB.X == before, R(outsideB));
                 Check("boundary: only the boundary subtree arranged", ui.layout.arrangedCount == 3, "arranged=" + ui.layout.arrangedCount);
                 Check("queue drained", ui.layoutQueue.Count == 0 && !fixedBox.queuedForLayout);
+            }
+
+            // ---- Pages: built once, then only hidden and shown ----
+            {
+                var ui = NewContext(1f, 200, 200);
+                var page = ui.Signal(0);
+                int builds = 0;
+                Box first = null;
+                Region pages = ui.Pages(() => page.Value,
+                    () => { builds++; return first = ui.Div().Height(30).Children(new FakeText(ui, "one")); },
+                    () => { builds++; return ui.Div().Height(50); });
+                Box tail = ui.Div().Height(10);
+                Layout(ui, ui.Div().Children(pages, tail));
+                Check("pages: only the shown page is built", builds == 1 && tail.Y == 30, R(tail));
+                page.Value = 1;
+                Relayout(ui);
+                Check("pages: the second one built on first visit", builds == 2 && tail.Y == 50, R(tail));
+                page.Value = 0;
+                Relayout(ui);
+                Check("pages: switching back rebuilds nothing, restyles and relays out little",
+                    builds == 2 && tail.Y == 30 && first.children[0].computed.FontSize == 16f && ui.layout.arrangedCount <= 4,
+                    "arranged=" + ui.layout.arrangedCount);
             }
 
             // ---- a fixed-size flex item still shrinks to its content minimum ----
@@ -1908,6 +2179,8 @@ namespace MenUI
             AnimationTests();
             TransitionTests();
             CutoffTests();
+            LayerTests();
+            MaterialTests();
 
             Console.WriteLine(failures == 0 ? "ALL PASSED" : failures + " FAILED");
             return failures;

@@ -61,8 +61,14 @@ namespace MenUI
         /// CSS `font-family`: resolved to an index into the panel's fonts.
         /// Numbered after the paint-only block but it does change layout.
         public const int FontFamily = 50;
+        /// CSS `translate` and `scale`: applied by the GPU (a transform group),
+        /// neither laid out nor repainted — the cheapest things to animate.
+        /// The scale is around the element's center.
+        public const int TranslateX = 51;
+        public const int TranslateY = 52;
+        public const int Scale = 53;
 
-        public const int Count = 51;
+        public const int Count = 54;
 
         public static bool AffectsLayout(int property)
         {
@@ -90,8 +96,11 @@ namespace MenUI
         internal readonly Color[] colors = new Color[StyleProperty.Count];
         internal Shadow[] shadows;
         internal string fontFamily;
-        /// Per property, how changes to it animate (null: they jump).
-        internal AnimationSpec[] transitions;
+        // How changes animate, per property that has a transition (sparse:
+        // most styles have none, and resolving walks only these).
+        internal int[] transitionProperties;
+        internal AnimationSpec[] transitionSpecs;
+        internal int transitionCount;
 
         // The properties that were set, in the order they were first set, so
         // merging touches only those.
@@ -182,19 +191,38 @@ namespace MenUI
         /// Returns whether anything changed.
         internal bool SetTransition(int property, AnimationSpec spec)
         {
-            if (transitions == null)
+            for (int i = 0; i < transitionCount; i++)
             {
-                if (spec == null)
+                if (transitionProperties[i] == property)
                 {
-                    return false;
+                    if (transitionSpecs[i] == spec)
+                    {
+                        return false;
+                    }
+                    transitionSpecs[i] = spec;
+                    return true;
                 }
-                transitions = new AnimationSpec[StyleProperty.Count];
             }
-            if (transitions[property] == spec)
+            if (spec == null)
             {
                 return false;
             }
-            transitions[property] = spec;
+            if (transitionProperties == null || transitionCount == transitionProperties.Length)
+            {
+                int size = transitionProperties == null ? 4 : transitionCount * 2;
+                int[] properties = new int[size];
+                AnimationSpec[] specs = new AnimationSpec[size];
+                for (int i = 0; i < transitionCount; i++)
+                {
+                    properties[i] = transitionProperties[i];
+                    specs[i] = transitionSpecs[i];
+                }
+                transitionProperties = properties;
+                transitionSpecs = specs;
+            }
+            transitionProperties[transitionCount] = property;
+            transitionSpecs[transitionCount] = spec;
+            transitionCount++;
             return true;
         }
 
@@ -223,15 +251,9 @@ namespace MenUI
             {
                 fontFamily = other.fontFamily;
             }
-            if (other.transitions != null)
+            for (int i = 0; i < other.transitionCount; i++)
             {
-                for (int i = 0; i < StyleProperty.Count; i++)
-                {
-                    if (other.transitions[i] != null)
-                    {
-                        SetTransition(i, other.transitions[i]);
-                    }
-                }
+                SetTransition(other.transitionProperties[i], other.transitionSpecs[i]);
             }
         }
 

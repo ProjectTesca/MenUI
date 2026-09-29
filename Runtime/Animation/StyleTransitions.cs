@@ -43,6 +43,8 @@ namespace MenUI
         public const int Spacing = 1004;
         /// The insets: top, right, bottom, left.
         public const int Position = 1005;
+        /// Translate and scale (moved by the GPU: the cheapest).
+        public const int Transform = 1006;
     }
 
     internal static class StyleTransitions
@@ -51,7 +53,14 @@ namespace MenUI
         {
             return property == StyleProperty.FlexGrow || property == StyleProperty.FlexShrink
                 || (property >= StyleProperty.FlexBasis && property <= StyleProperty.FontSize)
-                || (property >= StyleProperty.CornerTopLeft && property <= StyleProperty.TextColor);
+                || (property >= StyleProperty.CornerTopLeft && property <= StyleProperty.TextColor)
+                || IsLayerProperty(property);
+        }
+
+        /// Shown through the element's transform group (no repaint) when it has one.
+        internal static bool IsLayerProperty(int property)
+        {
+            return property >= StyleProperty.TranslateX && property <= StyleProperty.Scale;
         }
 
         /// Whether `property` belongs to `selector` (a TransitionGroup or a
@@ -73,6 +82,7 @@ namespace MenUI
                     || property == StyleProperty.RowGap || property == StyleProperty.ColumnGap;
             }
             if (selector == TransitionGroup.Position) return property >= StyleProperty.Top && property <= StyleProperty.Left;
+            if (selector == TransitionGroup.Transform) return IsLayerProperty(property);
             return false;
         }
 
@@ -87,6 +97,7 @@ namespace MenUI
             if (IsColor(property) || property == StyleProperty.Opacity) return 0.002f;
             if (property == StyleProperty.FlexGrow || property == StyleProperty.FlexShrink) return 0.001f;
             if (property == StyleProperty.FontSize) return 0.02f;
+            if (property == StyleProperty.Scale) return 0.001f;
             return 0.05f;   // physical pixels (or percent)
         }
 
@@ -101,7 +112,9 @@ namespace MenUI
         {
             return (property >= StyleProperty.FlexBasis && property <= StyleProperty.PaddingLeft)
                 || (property >= StyleProperty.BorderTopWidth && property <= StyleProperty.BorderLeftWidth)
-                || property >= StyleProperty.RowGap;
+                || (property >= StyleProperty.RowGap && property <= StyleProperty.FontSize)
+                || (property >= StyleProperty.CornerTopLeft && property <= StyleProperty.CornerBottomLeft)
+                || property == StyleProperty.Scale;
         }
 
         /// Whether `unit` can be interpolated (pixels or percent).
@@ -193,6 +206,20 @@ namespace MenUI
         }
 
         internal bool IsRunning { get { return animations.Count > 0; } }
+
+        /// A fade or a transform is moving (worth a GPU layer).
+        internal bool AnimatesLayer()
+        {
+            for (int i = 0; i < animations.Count; i++)
+            {
+                int p = animations[i].property;
+                if (p == StyleProperty.Opacity || StyleTransitions.IsLayerProperty(p))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     /// Every element's running transitions, advanced once a frame.
@@ -201,6 +228,8 @@ namespace MenUI
         private readonly MenUIContext context;
         private readonly List<StyleAnimator> active = new List<StyleAnimator>();
         private bool ticking;
+        // Properties whose animation Apply just dropped (they jump, this time).
+        private readonly List<int> dropped = new List<int>();
 
         internal StyleAnimations(MenUIContext context)
         {
@@ -218,18 +247,24 @@ namespace MenUI
             ComputedStyle computed = e.computed;
             StyleAnimator animator = e.animator;
             bool hasPrevious = e.styleResolvedOnce;
-            for (int p = 0; p < StyleProperty.Count; p++)
+
+            // Running animations: retarget them, or drop them (transition
+            // removed, finished — an inherited property's last step is left
+            // to us by Tick — or a unit change: then the value jumps).
+            dropped.Clear();
+            if (animator != null)
             {
-                AnimationSpec spec = computed.TransitionOf(p);
-                PropertyAnimation running = animator != null && animator.IsRunning ? animator.Find(p) : null;
-                bool color = StyleTransitions.IsColor(p);
-                if (running != null)
+                List<PropertyAnimation> animations = animator.animations;
+                for (int j = animations.Count - 1; j >= 0; j--)
                 {
+                    PropertyAnimation running = animations[j];
+                    int p = running.property;
+                    AnimationSpec spec = computed.TransitionOf(p);
+                    bool color = StyleTransitions.IsColor(p);
                     if (spec == null || !running.track.running || (!color && computed.units[p] != running.unit))
                     {
-                        // Transition removed, finished (an inherited property:
-                        // Tick left the last step to us), or a unit change: jump.
-                        animator.animations.Remove(running);
+                        animations.RemoveAt(j);
+                        dropped.Add(p);
                         continue;
                     }
                     if (StyleTransitions.DiffersFromTarget(running.track.to, computed, p))
@@ -237,32 +272,31 @@ namespace MenUI
                         StyleTransitions.LoadTarget(running.track.to, computed, p);
                         if (!running.track.Start(spec))
                         {
-                            animator.animations.Remove(running);
+                            animations.RemoveAt(j);
+                            dropped.Add(p);
                             continue;
                         }
                     }
                     StyleTransitions.Write(computed, p, running.track.value);
-                    continue;
                 }
-                if (spec == null)
-                {
-                    continue;
-                }
+            }
 
-                // Where it starts: the entering style, or what was shown.
-                int fromUnit;
-                if (entering != null)
+            // Transitioned properties that changed: start from what was shown
+            // (or from the entering style).
+            if (!computed.hasTransitions || (entering == null && !hasPrevious))
+            {
+                return;
+            }
+            for (int k = 0; k < computed.transitionCount; k++)
+            {
+                int p = computed.transitionList[k];
+                if ((animator != null && animator.Find(p) != null) || dropped.Contains(p))
                 {
-                    fromUnit = entering.units[p];
+                    continue;   // handled above
                 }
-                else if (hasPrevious)
-                {
-                    fromUnit = previousUnits[p];
-                }
-                else
-                {
-                    continue;
-                }
+                AnimationSpec spec = computed.transitions[p];
+                bool color = StyleTransitions.IsColor(p);
+                int fromUnit = entering != null ? entering.units[p] : previousUnits[p];
                 if (!color && (fromUnit != computed.units[p] || !StyleTransitions.IsInterpolable(fromUnit)))
                 {
                     continue;
@@ -322,7 +356,7 @@ namespace MenUI
                 StyleAnimator animator = active[i];
                 Element e = animator.element;
                 bool attached = context.IsAttached(e);
-                bool layout = false, paint = false, opacity = false, restyle = false;
+                bool layout = false, paint = false, opacity = false, restyle = false, layer = false, layerEnded = false;
                 List<PropertyAnimation> animations = animator.animations;
                 for (int j = animations.Count - 1; j >= 0; j--)
                 {
@@ -352,18 +386,23 @@ namespace MenUI
                     {
                         context.hitVersion++;   // an opaque background makes it hittable
                     }
-                    if (StyleProperty.AffectsLayout(p)) layout = true;
+                    bool onLayer = p == StyleProperty.Opacity || StyleTransitions.IsLayerProperty(p);
+                    if (onLayer && e.translateGroup != TransformGroups.Root) layer = true;
+                    else if (StyleProperty.AffectsLayout(p)) layout = true;
                     else if (p == StyleProperty.Opacity) opacity = true;
-                    else paint = true;
+                    else if (!onLayer) paint = true;
                     if (!moving)
                     {
                         animations.RemoveAt(j);
+                        if (onLayer) layerEnded = true;
                     }
                 }
                 if (restyle) e.MarkStyleDirty();
                 if (layout) e.MarkLayoutDirty(true);
                 if (opacity) e.MarkSubtreePaintDirty();
                 else if (paint) e.MarkPaintDirty();
+                if (layer) context.SyncLayer(e);
+                if (layerEnded && attached) context.UpdateLayer(e);   // may give the group back
                 if (animations.Count == 0 || !attached)
                 {
                     animations.Clear();

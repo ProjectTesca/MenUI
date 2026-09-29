@@ -173,6 +173,16 @@ namespace MenUI
             return self;
         }
         public static T Opacity<T>(this T self, float value) where T : IStyleTarget { return Number(self, StyleProperty.Opacity, value); }
+
+        // ---- transforms (GPU: no layout, no repaint) --------------------------------------------
+
+        /// CSS `translate` in logical pixels: moves the element (and what is in
+        /// it) without affecting layout.
+        public static T Translate<T>(this T self, float x, float y) where T : IStyleTarget { return Number(Number(self, StyleProperty.TranslateX, x), StyleProperty.TranslateY, y); }
+        public static T TranslateX<T>(this T self, float x) where T : IStyleTarget { return Number(self, StyleProperty.TranslateX, x); }
+        public static T TranslateY<T>(this T self, float y) where T : IStyleTarget { return Number(self, StyleProperty.TranslateY, y); }
+        /// CSS `scale` around the element's center (1: as is).
+        public static T Scale<T>(this T self, float value) where T : IStyleTarget { return Number(self, StyleProperty.Scale, value); }
         public static T Visibility<T>(this T self, VisibilityMode value) where T : IStyleTarget { return EnumValue(self, StyleProperty.Visibility, (int)value); }
         public static T PointerEvents<T>(this T self, PointerEventsMode value) where T : IStyleTarget { return EnumValue(self, StyleProperty.PointerEvents, (int)value); }
 
@@ -237,7 +247,7 @@ namespace MenUI
             {
                 self.StyleWritten(style.setOrder[i]);
             }
-            if (style.transitions != null)
+            if (style.transitionCount > 0)
             {
                 self.StyleWritten(StyleProperty.Count);
             }
@@ -368,7 +378,9 @@ namespace MenUI
                 self.translateGroup = group;
                 context.OnCleanup(() => context.groups.Free(group));
                 self.MarkLayoutDirty(false);
+                context.SyncLayer(self);
             }
+            self.styleLayer = false;   // kept for good, whatever its style
             int owned = self.translateGroup;
             context.Bind(() =>
             {
@@ -378,10 +390,6 @@ namespace MenUI
             return self;
         }
 
-        public static T Translate<T>(this T self, float x, float y) where T : Element
-        {
-            return Translate(self, () => x, () => y);
-        }
 
         public static T Background<T>(this T self, Func<Color> value) where T : Element { self.context.Bind(() => self.Background(value())); return self; }
         public static T TextColor<T>(this T self, Func<Color> value) where T : Element { self.context.Bind(() => self.TextColor(value())); return self; }
