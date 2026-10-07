@@ -12,7 +12,7 @@ trap 'rm -rf "$OUT"' EXIT
 
 {
   echo -nostdlib; echo -noconfig; echo -langversion:9; echo -target:exe
-  echo -main:MenUI.Harness; echo -nowarn:0169,0649,0414,1701,1702; echo "-out:$OUT/Tests.dll"
+  echo -main:MenUI.Harness; echo -define:MENUI_HEADLESS; echo -nowarn:0169,0649,0414,1701,1702; echo "-out:$OUT/Tests.dll"
   for f in "$NET"/*.dll; do
     case $(basename "$f") in Microsoft.DiaSymReader*|mscordaccore*|clr*|*Native*) ;; *) echo "-r:$f";; esac
   done

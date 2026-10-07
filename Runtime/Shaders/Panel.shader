@@ -105,6 +105,13 @@ Shader "MenUI/Panel"
                 float group = floor(parameters.x / GROUP_STRIDE);
                 parameters.x -= group * GROUP_STRIDE;
                 float4 transform = _GroupOffsets[(int)group];   // translation, scale, opacity
+                if (transform.w <= 0.0001)
+                {
+                    // An invisible group (a prepared box, a finished fade):
+                    // a collapsed quad, no pixels shaded.
+                    output.position = float4(0, 0, 0, 1);
+                    return output;
+                }
                 float4 groupClip = _GroupClips[(int)group];
                 float zoom = max(transform.z, 1e-4);
 

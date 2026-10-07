@@ -128,7 +128,12 @@ namespace MenUI
                 Material material = mesh.material;
                 int slot = material != null ? context.AtlasSlot(material.mainTexture) : 0;
                 Vector3[] vertices = mesh.vertices;
-                Vector2[] uvs = mesh.uvs0;
+                // Read from the uploaded mesh, not TMP_MeshInfo.uvs0: VRChat's
+                // client has a TMP whose uvs0 is a Vector4[], so the extern the
+                // SDK exposes (Vector2[]) halts the behaviour in game, while
+                // ClientSim runs fine. The shaping text is active, so
+                // ForceMeshUpdate always uploads.
+                Vector2[] uvs = mesh.mesh.uv;
                 int quads = mesh.vertexCount / 4;
                 for (int q = 0; q < quads; q++)
                 {

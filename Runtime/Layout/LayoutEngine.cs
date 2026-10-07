@@ -35,6 +35,7 @@ namespace MenUI
         private readonly List<Element> pending = new List<Element>();
         private readonly List<int> pendingDepths = new List<int>();
         private readonly List<Element> relayoutRoots = new List<Element>();
+        private readonly List<Element> postponed = new List<Element>();
 
         /// Lays out again what was invalidated (see Element.MarkLayoutDirty).
         ///
@@ -73,10 +74,17 @@ namespace MenUI
                     e.savedAnswerCount = -1;
                     continue;
                 }
+                if (e.InsidePausedLayout())
+                {
+                    postponed.Add(e);   // stays queued until its load lays it out
+                    continue;
+                }
                 pending.Add(e);
                 pendingDepths.Add(depthOf);
             }
             queue.Clear();
+            queue.AddRange(postponed);
+            postponed.Clear();
 
             while (pending.Count > 0)
             {
@@ -105,6 +113,7 @@ namespace MenUI
                 }
                 // Its size may have changed: the parent must be laid out again.
                 Invalidate(parent, pass);
+                parent.TruncateStack(e);
                 if (!parent.queuedForLayout)
                 {
                     parent.queuedForLayout = true;
@@ -174,8 +183,8 @@ namespace MenUI
             int count = 0;
             for (int slot = 0; slot < Element.MeasureCacheSlots; slot++)
             {
-                int o = slot * 6;
-                if (cache[o + 5] == 0 || cache[o + 5] < e.validSincePass)
+                int o = slot * CacheEntry;
+                if (cache[o + 5] == 0 || cache[o + 5] < e.validSincePass || cache[o + 6] == 0)
                 {
                     continue;
                 }
@@ -205,6 +214,27 @@ namespace MenUI
         /// cannot change, and the element is laid out again in place.
         /// Measuring here fills the cache the arrange that follows reads.
         private bool KeepsAnswers(Element e)
+        {
+            if (KeepsEveryAnswer(e))
+            {
+                return true;
+            }
+            // The parent is laid out again and asks what it still needs: the
+            // questions replayed here count only if it asks them (otherwise a
+            // question it stopped asking would be replayed at every change).
+            int[] cache = e.measureCache;
+            for (int slot = 0; slot < Element.MeasureCacheSlots; slot++)
+            {
+                int o = slot * CacheEntry;
+                if (cache[o + 5] == pass)
+                {
+                    cache[o + 6] = 0;
+                }
+            }
+            return false;
+        }
+
+        private bool KeepsEveryAnswer(Element e)
         {
             int count = e.savedAnswerCount;
             e.savedAnswerCount = -1;   // used once
@@ -358,9 +388,16 @@ namespace MenUI
             // A scroll view's content scrolls as a group; the padding box
             // (already in the child clip: scroll views clip) is its clip.
             ScrollView scrollView = e as ScrollView;
+            // Its content is laid out from the padding box's corner (0, 0): the
+            // group's origin places it, so when the view moves, the content's
+            // layout (and its draw records) stays as it is.
+            int localX = 0, localY = 0;
             if (scrollView != null)
             {
                 groups.SetFrame(scrollView.scrollGroup, e.group, childClipLeft, childClipTop, childClipRight, childClipBottom);
+                localX = x + borderLeft;
+                localY = y + borderTop;
+                groups.SetOrigin(scrollView.scrollGroup, localX, localY);
                 e.childGroup = scrollView.scrollGroup;
                 childClipLeft = -TransformGroups.Unbounded;
                 childClipTop = -TransformGroups.Unbounded;
@@ -375,26 +412,30 @@ namespace MenUI
             else
             {
                 int usedWidth, usedHeight;
-                LayoutChildren(e, contentWidth, true, contentHeight, true, true, contentX, contentY,
+                LayoutChildren(e, contentWidth, true, contentHeight, true, true, contentX - localX, contentY - localY,
                     childClipLeft, childClipTop, childClipRight, childClipBottom, out usedWidth, out usedHeight);
-                if (scrollView != null)
-                {
-                    // Scrollable extent: the content plus the padding around it.
-                    scrollView.ReportMetrics(
-                        Mathf.Max(0, width - borderLeft - borderRight), Mathf.Max(0, height - borderTop - borderBottom),
-                        usedWidth + paddingLeft + paddingRight, usedHeight + paddingTop + paddingBottom);
-                }
 
                 // Absolutely positioned children, against the padding box.
-                int paddingBoxX = x + borderLeft;
-                int paddingBoxY = y + borderTop;
+                int paddingBoxX = x + borderLeft - localX;
+                int paddingBoxY = y + borderTop - localY;
                 int paddingBoxWidth = Mathf.Max(0, width - borderLeft - borderRight);
                 int paddingBoxHeight = Mathf.Max(0, height - borderTop - borderBottom);
-                List<Element> absolutes = CollectAbsolutes(e, null);
+                List<Element> absolutes = CollectAbsolutes(e, null, e.stackCount);
                 for (int i = 0; absolutes != null && i < absolutes.Count; i++)
                 {
                     ArrangeAbsolute(absolutes[i], paddingBoxX, paddingBoxY, paddingBoxWidth, paddingBoxHeight,
-                        contentX, contentY, childClipLeft, childClipTop, childClipRight, childClipBottom);
+                        contentX - localX, contentY - localY, childClipLeft, childClipTop, childClipRight, childClipBottom);
+                }
+                if (scrollView != null)
+                {
+                    // Scrollable extent: the content plus the padding around it
+                    // (and, for the scrollbar only, content being prepared).
+                    int preparedWidth = 0, preparedHeight = 0;
+                    PreparedExtent(e, paddingBoxX, paddingBoxY, ref preparedWidth, ref preparedHeight);
+                    scrollView.ReportMetrics(
+                        Mathf.Max(0, width - borderLeft - borderRight), Mathf.Max(0, height - borderTop - borderBottom),
+                        usedWidth + paddingLeft + paddingRight, usedHeight + paddingTop + paddingBottom,
+                        preparedWidth, preparedHeight);
                 }
             }
             e.layoutDirty = false;
@@ -403,6 +444,23 @@ namespace MenUI
         private void ArrangeAbsolute(Element e, int boxX, int boxY, int boxWidth, int boxHeight, int staticX, int staticY,
             int clipLeft, int clipTop, int clipRight, int clipBottom)
         {
+            Element anchor = e.anchor;
+            if (anchor != null && anchor.hasArranged && anchor.parent != null)
+            {
+                // A prepared box, on the element it will replace.
+                int anchoredHeight;
+                if (e.matchAnchorHeight)
+                {
+                    anchoredHeight = anchor.height;
+                }
+                else
+                {
+                    int unusedWidth;
+                    Measure(e, anchor.width, true, -1, out unusedWidth, out anchoredHeight);
+                }
+                Arrange(e, anchor.x, anchor.y, anchor.width, anchoredHeight, boxWidth, clipLeft, clipTop, clipRight, clipBottom);
+                return;
+            }
             ComputedStyle s = e.computed;
             bool hasLeft = s.Unit(StyleProperty.Left) != (int)LengthUnit.Auto;
             bool hasRight = s.Unit(StyleProperty.Right) != (int)LengthUnit.Auto;
@@ -528,7 +586,7 @@ namespace MenUI
             StoreMeasure(e, availableWidth, exactWidth, availableHeight, width, height);
         }
 
-        internal bool fitShortcut = true;   // tests compare with and without
+        internal bool fitShortcut = true;
 
         /// A flex row that does not wrap: at its max-content width every item
         /// gets its max-content size, as when measured unconstrained.
@@ -574,7 +632,11 @@ namespace MenUI
             return Mathf.Max(minimum, Mathf.Min(value, maximum));
         }
 
-        // Cache entries per element: [availableWidth, exact, availableHeight, width, height, pass].
+        // Cache entries per element: [availableWidth, exact, availableHeight,
+        // width, height, pass, asked] — asked: 1 when its parent's layout
+        // asked it (not only KeepsAnswers replaying it).
+        internal const int CacheEntry = 7;
+
         private bool TryCachedMeasure(Element e, int availableWidth, bool exactWidth, int availableHeight,
             out int width, out int height)
         {
@@ -582,10 +644,11 @@ namespace MenUI
             int exact = exactWidth ? 1 : 0;
             for (int slot = 0; slot < Element.MeasureCacheSlots; slot++)
             {
-                int o = slot * 6;
+                int o = slot * CacheEntry;
                 if (cache[o + 5] != 0 && cache[o + 5] >= e.validSincePass && (!e.layoutDirty || cache[o + 5] == pass)
                     && cache[o] == availableWidth && cache[o + 1] == exact && cache[o + 2] == availableHeight)
                 {
+                    cache[o + 6] = 1;
                     width = cache[o + 3];
                     height = cache[o + 4];
                     return true;
@@ -599,9 +662,9 @@ namespace MenUI
         private void StoreMeasure(Element e, int availableWidth, bool exactWidth, int availableHeight, int width, int height)
         {
             int[] cache = e.measureCache;
-            int o = e.measureCacheNext * 6;
+            int o = e.measureCacheNext * CacheEntry;
             e.measureCacheNext = (e.measureCacheNext + 1) % Element.MeasureCacheSlots;
-            if (cache[o + 5] != 0 && cache[o + 5] >= e.validSincePass)
+            if (cache[o + 5] != 0 && cache[o + 5] >= e.validSincePass && cache[o + 6] != 0)
             {
                 e.measureOverflowed = true;
             }
@@ -611,6 +674,7 @@ namespace MenUI
             cache[o + 3] = width;
             cache[o + 4] = height;
             cache[o + 5] = pass;
+            cache[o + 6] = 1;
         }
 
         // ================================================================
@@ -657,18 +721,6 @@ namespace MenUI
                     innerWidth = -1;
                 }
             }
-            List<Element> items = scratch.items;
-            items.Clear();
-            CollectFlow(e, items, arrange, originX, originY, innerWidth, innerHeight, clipLeft, clipTop, clipRight, clipBottom);
-            int count = items.Count;
-            scratch.Ensure(count);
-            if (count == 0)
-            {
-                usedWidth = 0;
-                usedHeight = 0;
-                return;
-            }
-
             bool isFlex = s.Display == DisplayMode.Flex;
             Direction direction = isFlex ? (Direction)s.Enum(StyleProperty.Direction) : Direction.Column;
             bool isRow = direction == Direction.Row || direction == Direction.RowReverse;
@@ -689,6 +741,34 @@ namespace MenUI
             int percentReference = widthDefinite ? innerWidth : -1;
             int mainReference = mainDefinite ? mainAvailable : -1;
             int crossReference = crossDefinite ? crossAvailable : -1;
+
+            // A column whose leading children are settled (see SettledChildren)
+            // is laid out from its first new child: the settled ones count as
+            // one block of known height.
+            bool stacks = !isRow && !reverse && !wrap && justify == Justify.Start && scrollView == null;
+            int skip = stacks ? SettledChildren(e, arrange, innerWidth, widthDefinite, mainGap, originX, originY,
+                clipLeft, clipTop, clipRight, clipBottom) : 0;
+            Element settledLast = skip > 0 ? e.children[skip - 1] : null;
+            int stackMain = skip > 0 ? settledLast.stackEndMain : 0;
+            int stackItems = skip > 0 ? settledLast.stackEndItems : 0;
+
+            List<Element> items = scratch.items;
+            items.Clear();
+            CollectFlow(e, skip, items, arrange, originX, originY, innerWidth, innerHeight, clipLeft, clipTop, clipRight, clipBottom);
+            int count = items.Count;
+            scratch.Ensure(count);
+            if (count == 0 && stackItems == 0)
+            {
+                usedWidth = 0;
+                usedHeight = 0;
+                if (arrange && stacks)
+                {
+                    SettleStack(e, skip, scratch, 0, innerWidth, widthDefinite, mainGap, originX, originY,
+                        clipLeft, clipTop, clipRight, clipBottom, crossDefinite ? crossAvailable : 0);
+                }
+                return;
+            }
+            int stackLead = stackItems > 0 && count > 0 ? mainGap : 0;
 
             int[] marginMainStart = scratch.marginMainStart;
             int[] marginMainEnd = scratch.marginMainEnd;
@@ -811,17 +891,31 @@ namespace MenUI
             {
                 int start = lineStarts[line];
                 int end = lineStarts[line + 1];
-                int used = mainGap * (end - start - 1);
+                int used = end > start ? mainGap * (end - start - 1) : 0;
                 for (int i = start; i < end; i++)
                 {
                     used += hypothetical[i] + marginMainStart[i] + marginMainEnd[i];
                     mainSize[i] = hypothetical[i];
                 }
+                used += stackMain + stackLead;
                 if (mainDefinite && used != mainAvailable)
                 {
+                    if (stacks)
+                    {
+                        // Flexible lengths share space among every item: none
+                        // is settled on its own.
+                        e.stackCount = 0;
+                        if (skip > 0)
+                        {
+                            LayoutChildrenWith(scratch, e, innerWidth, widthDefinite, innerHeight, heightDefinite, arrange,
+                                originX, originY, clipLeft, clipTop, clipRight, clipBottom, out usedWidth, out usedHeight);
+                            return;
+                        }
+                        stacks = false;
+                    }
                     ResolveFlexibleLengths(scratch, start, end, used < mainAvailable, mainAvailable - mainGap * (end - start - 1));
                 }
-                int lineUsed = mainGap * (end - start - 1);
+                int lineUsed = (end > start ? mainGap * (end - start - 1) : 0) + stackMain + stackLead;
                 for (int i = start; i < end; i++)
                 {
                     lineUsed += mainSize[i] + marginMainStart[i] + marginMainEnd[i];
@@ -835,7 +929,7 @@ namespace MenUI
             {
                 int start = lineStarts[line];
                 int end = lineStarts[line + 1];
-                int maximum = 0;
+                int maximum = skip > 0 ? settledLast.stackEndCross : 0;
                 for (int i = start; i < end; i++)
                 {
                     Element item = items[i];
@@ -857,9 +951,18 @@ namespace MenUI
                         Measure(item, crossForItem, false, mainReference, out measuredWidth, out measuredHeight);
                         crossSize[i] = measuredWidth;
                     }
+                    scratch.crossOuter[i] = crossSize[i] + marginsCross;
                     maximum = Mathf.Max(maximum, crossSize[i] + marginsCross);
                 }
                 lineCross[line] = singleLineFillsCross ? crossAvailable : maximum;
+            }
+            if (arrange && skip > 0 && lineCross[0] != e.stackLineCross)
+            {
+                // Wider now: the settled children are aligned in a new width.
+                e.stackCount = 0;
+                LayoutChildrenWith(scratch, e, innerWidth, widthDefinite, innerHeight, heightDefinite, arrange,
+                    originX, originY, clipLeft, clipTop, clipRight, clipBottom, out usedWidth, out usedHeight);
+                return;
             }
 
             // align-content: share the leftover cross space between lines.
@@ -930,7 +1033,7 @@ namespace MenUI
                 {
                     int i = start + k;
                     Element item = items[i];
-                    int mainPosition = slotOffsets[k] + marginMainStart[i];
+                    int mainPosition = slotOffsets[k] + marginMainStart[i] + stackMain + stackLead;
                     if (reverse)
                     {
                         mainPosition = containerMain - mainPosition - mainSize[i];
@@ -964,6 +1067,97 @@ namespace MenUI
                     Arrange(item, childX, childY, childWidth, childHeight, innerWidth, clipLeft, clipTop, clipRight, clipBottom);
                 }
             }
+            if (stacks)
+            {
+                SettleStack(e, skip, scratch, count, innerWidth, widthDefinite, mainGap, originX, originY,
+                    clipLeft, clipTop, clipRight, clipBottom, lineCross[0]);
+            }
+        }
+
+        /// How many leading children of a column are settled for a layout
+        /// with these inputs: laid out, since, exactly as they would be now
+        /// (every change to one, or before one, cuts the prefix back — see
+        /// Element.TruncateStack). 0 when the inputs differ.
+        private static int SettledChildren(Element e, bool arrange, int innerWidth, bool widthDefinite, int gap,
+            int originX, int originY, int clipLeft, int clipTop, int clipRight, int clipBottom)
+        {
+            if (e.stackCount == 0 || e.stackWidth != innerWidth || e.stackWidthDefinite != widthDefinite || e.stackGap != gap)
+            {
+                return 0;
+            }
+            if (arrange && (e.stackOriginX != originX || e.stackOriginY != originY || e.stackGroup != e.childGroup
+                || e.stackClipLeft != clipLeft || e.stackClipTop != clipTop || e.stackClipRight != clipRight
+                || e.stackClipBottom != clipBottom))
+            {
+                return 0;
+            }
+            return e.stackCount;
+        }
+
+        /// After arranging a column: its children from `skip` on join the
+        /// settled prefix, up to the first one whose layout may depend on
+        /// more than what came before it (see Stacks).
+        private static void SettleStack(Element e, int skip, LayoutScratch scratch, int count,
+            int innerWidth, bool widthDefinite, int gap, int originX, int originY,
+            int clipLeft, int clipTop, int clipRight, int clipBottom, int lineCross)
+        {
+            Element settledLast = skip > 0 ? e.children[skip - 1] : null;
+            int main = skip > 0 ? settledLast.stackEndMain : 0;
+            int cross = skip > 0 ? settledLast.stackEndCross : 0;
+            int placed = skip > 0 ? settledLast.stackEndItems : 0;
+            int settled = skip;
+            int item = 0;
+            List<Element> items = scratch.items;
+            for (int c = skip; c < e.children.Count; c++)
+            {
+                Element child = e.children[c];
+                ComputedStyle s = child.computed;
+                if (child.layoutPaused || s.Display == DisplayMode.Contents || s.Position == PositionMode.Absolute)
+                {
+                    break;
+                }
+                if (s.Display != DisplayMode.None)
+                {
+                    if (item >= count || items[item] != child || !Stacks(s))
+                    {
+                        break;
+                    }
+                    main += (placed > 0 ? gap : 0) + scratch.mainSize[item] + scratch.marginMainStart[item] + scratch.marginMainEnd[item];
+                    cross = Mathf.Max(cross, scratch.crossOuter[item]);
+                    placed++;
+                    item++;
+                }
+                child.stackIndex = c;
+                child.stackEndMain = main;
+                child.stackEndCross = cross;
+                child.stackEndItems = placed;
+                settled++;
+            }
+            e.stackCount = settled;
+            e.stackWidth = innerWidth;
+            e.stackWidthDefinite = widthDefinite;
+            e.stackGap = gap;
+            e.stackOriginX = originX;
+            e.stackOriginY = originY;
+            e.stackGroup = e.childGroup;
+            e.stackClipLeft = clipLeft;
+            e.stackClipTop = clipTop;
+            e.stackClipRight = clipRight;
+            e.stackClipBottom = clipBottom;
+            e.stackLineCross = lineCross;
+        }
+
+        /// A column item laid out from its own content and the column's
+        /// width only: no relative offset, nothing sized against the
+        /// column's height.
+        private static bool Stacks(ComputedStyle s)
+        {
+            int auto = (int)LengthUnit.Auto;
+            int percent = (int)LengthUnit.Percent;
+            return s.Unit(StyleProperty.Left) == auto && s.Unit(StyleProperty.Right) == auto
+                && s.Unit(StyleProperty.Top) == auto && s.Unit(StyleProperty.Bottom) == auto
+                && s.Unit(StyleProperty.Height) != percent && s.Unit(StyleProperty.FlexBasis) != percent
+                && s.Unit(StyleProperty.MinHeight) != percent && s.Unit(StyleProperty.MaxHeight) != percent;
         }
 
         /// CSS "resolve the flexible lengths" (§9.7): distribute the free
@@ -1152,7 +1346,7 @@ namespace MenUI
             {
                 Element child = e.children[i];
                 ComputedStyle c = child.computed;
-                if (c.Display == DisplayMode.None || c.Position == PositionMode.Absolute)
+                if (c.Display == DisplayMode.None || c.Position == PositionMode.Absolute || child.layoutPaused)
                 {
                     continue;
                 }
@@ -1228,15 +1422,15 @@ namespace MenUI
         /// In-flow children, with `display: contents` elements replaced by
         /// their own children (their rectangle is set to the parent's content
         /// box when arranging).
-        private void CollectFlow(Element e, List<Element> into, bool arrange, int originX, int originY,
+        private void CollectFlow(Element e, int firstChild, List<Element> into, bool arrange, int originX, int originY,
             int innerWidth, int innerHeight, int clipLeft, int clipTop, int clipRight, int clipBottom)
         {
-            for (int i = 0; i < e.children.Count; i++)
+            for (int i = firstChild; i < e.children.Count; i++)
             {
                 Element child = e.children[i];
                 ComputedStyle c = child.computed;
                 DisplayMode display = c.Display;
-                if (display == DisplayMode.None)
+                if (display == DisplayMode.None || child.layoutPaused)
                 {
                     continue;
                 }
@@ -1258,7 +1452,7 @@ namespace MenUI
                         child.group = e.childGroup;
                         child.childGroup = e.childGroup;
                     }
-                    CollectFlow(child, into, arrange, originX, originY, innerWidth, innerHeight, clipLeft, clipTop, clipRight, clipBottom);
+                    CollectFlow(child, 0, into, arrange, originX, originY, innerWidth, innerHeight, clipLeft, clipTop, clipRight, clipBottom);
                     continue;
                 }
                 if (c.Position == PositionMode.Absolute)
@@ -1269,21 +1463,40 @@ namespace MenUI
             }
         }
 
-        /// The absolutely positioned children (through `display: contents`);
-        /// null when there are none, which is the common case.
-        private static List<Element> CollectAbsolutes(Element e, List<Element> into)
+        /// How far content being prepared out of sight (inert, see
+        /// BackgroundWork) reaches below / right of a padding box's origin.
+        private static void PreparedExtent(Element e, int originX, int originY, ref int width, ref int height)
         {
             for (int i = 0; i < e.children.Count; i++)
             {
                 Element child = e.children[i];
+                if (child.inert && child.loading && child.hasArranged)
+                {
+                    width = Mathf.Max(width, child.x + child.width - originX);
+                    height = Mathf.Max(height, child.y + child.height - originY);
+                }
+                else if (child.computed.Display == DisplayMode.Contents)
+                {
+                    PreparedExtent(child, originX, originY, ref width, ref height);
+                }
+            }
+        }
+
+        /// The absolutely positioned children (through `display: contents`);
+        /// null when there are none, which is the common case.
+        private static List<Element> CollectAbsolutes(Element e, List<Element> into, int firstChild)
+        {
+            for (int i = firstChild; i < e.children.Count; i++)
+            {
+                Element child = e.children[i];
                 DisplayMode display = child.computed.Display;
-                if (display == DisplayMode.None)
+                if (display == DisplayMode.None || child.layoutPaused)
                 {
                     continue;
                 }
                 if (display == DisplayMode.Contents)
                 {
-                    into = CollectAbsolutes(child, into);
+                    into = CollectAbsolutes(child, into, 0);
                     continue;
                 }
                 if (child.computed.Position == PositionMode.Absolute)
@@ -1309,7 +1522,7 @@ namespace MenUI
         internal float[] grow, shrink;
         internal bool[] stretch;
         internal int[] lineStarts, lineCross, lineMainUsed, lineOffset, slotSizes, slotOffsets;
-        internal int[] flexBase, violation;
+        internal int[] flexBase, violation, crossOuter;
         internal bool[] frozen;
 
         internal void Ensure(int count)
@@ -1340,6 +1553,7 @@ namespace MenUI
             slotOffsets = new int[size];
             flexBase = new int[size];
             violation = new int[size];
+            crossOuter = new int[size];
             frozen = new bool[size];
         }
     }

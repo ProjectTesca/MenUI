@@ -173,8 +173,12 @@ namespace MenUI
         private float remaining;
         private bool cancelled;
 
+        private readonly Owner scope;
+        Owner IFrameTask.Scope { get { return scope; } }
+
         internal Delay(MenUIContext ui, float seconds, Action action)
         {
+            scope = ui.runtime.currentOwner;
             this.ui = ui;
             this.action = action;
             remaining = seconds;

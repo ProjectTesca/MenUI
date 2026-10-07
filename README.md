@@ -192,6 +192,52 @@ so its opacity is applied by the GPU as well. `Graphic(g => ...)` draws what
 boxes cannot — arcs, wavy lines, ripples, and shapes that morph
 (`ShapeSpec.Cookie9`, `Sunny`, `Pentagon`, ...) — rerunning like a binding.
 
+## Background loading and distance
+
+```csharp
+// Built a little every frame, out of sight (styled and laid out, not drawn);
+// the placeholder shows until it is done.
+Deferred(async load =>
+{
+    Box list = Div().Column();
+    load.Content.Child(list);              // attach early: each slice gets
+    for (int i = 0; i < 500; i++)          // styled and laid out in its frame
+    {
+        list.Child(Row(i));
+        load.Progress = i / 500f;
+        await load.Yield();                // on at once while the budget lasts
+    }
+}, placeholder: () => Spinner());
+
+Pages(() => tab.Value, true, () => Home(), () => Settings());   // preloaded the same way
+Near(3f, () => FullCard(), far: () => Title(), unloadWhenFar: false);
+Text(() => UI.ViewerDistance.ToString("0.0") + " m");
+UI.BackgroundBudget = 1.5f;                // ms per frame, MenUI's own work included
+```
+
+Each frame, after its own work, MenUI gives background loads what is left
+of `BackgroundBudget`; the first step of a frame always runs, so loading
+never stalls on a busy frame. A load stops when its place is removed.
+While loading, `load.Content` (a block box: style it as its place needs)
+sits on the placeholder, invisible; it is laid out and drawn — at zero
+opacity — every quarter second, so showing it moves and redraws nothing: the
+switch costs about a frame of ordinary work. Scrollbars make room for
+content being loaded, so its width does not change when it appears.
+`Near` shows the far content until the near one is ready, and when the viewer
+leaves either hides it (quick to come back) or, with `unloadWhenFar`, frees
+it. On the panel, **sleepDistance** (meters) and **sleepWhenUnseen** stop all
+of MenUI's work while the viewer is far away or no camera sees the panel; it
+keeps showing its last image and resumes where it was.
+
+What is out of sight costs next to nothing. A hidden page, the hidden side of
+`Near` and content still loading are *suspended*: their animations,
+transitions, scrolling and other frame work wait (and go on where they were
+when shown), nothing of them is laid out or painted, and the GPU discards
+their quads before rasterizing. Showing them again only flips an opacity or a
+display, with their records already made, so it does not stall. Turn on
+**logPerformance** to get a summary every 5 seconds (frames, frames asleep,
+renders, MenUI's average and worst ms, frame tasks running and waiting).
+
 ## Live resizing
 
 `ResizePanel(width, height, scale)` (or editing **bufferWidth**, **bufferHeight**
@@ -220,8 +266,8 @@ sheet.Rule(".title", s => s.FontFamily("M PLUS Rounded, Noto Sans JP"));
 Package Manager › MenUI › Samples › **Demos**: a CSS tour, scrolling with a
 10,000-row virtual list, a drag-and-drop kanban board, a form with text
 boxes, every built-in component with a theme switch, live resizing,
-animation (transitions, enter and exit, curves, keyframes), and Material
-Design 3 Expressive.
+animation (transitions, enter and exit, curves, keyframes), Material
+Design 3 Expressive, and background loading with distance.
 
 ## Developing MenUI
 

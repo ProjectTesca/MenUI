@@ -173,7 +173,7 @@ namespace MenUI.Verification
             {
                 TMP_MeshInfo mesh = meshes[m];
                 Vector3[] vertices = mesh.vertices;
-                Vector2[] uvs = mesh.uvs0;
+                Vector2[] uvs = mesh.mesh.uv;   // uvs0 is not callable in VRChat's client (see TextShaper)
                 int quadCount = mesh.vertexCount / 4;
                 atlases[m] = mesh.material != null ? mesh.material.mainTexture : null;
 

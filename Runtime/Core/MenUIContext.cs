@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using UnityEngine;
 using Stopwatch = System.Diagnostics.Stopwatch;
 
@@ -67,6 +68,20 @@ namespace MenUI
         internal readonly Dictionary<string, object> extensions = new Dictionary<string, object>();
         /// The set or order of records changes: repaint everything.
         internal bool paintStructureDirty = true;
+        /// Record ranges to paint again (see Painter.RepaintRange), and every
+        /// element that has one.
+        internal readonly List<Element> rangeRequests = new List<Element>();
+        internal readonly List<Element> rangeOwners = new List<Element>();
+
+        internal void RequestRangePaint(Element owner)
+        {
+            if (!owner.rangeRequested)
+            {
+                owner.rangeRequested = true;
+                rangeRequests.Add(owner);
+            }
+            needsPaint = true;
+        }
 
         // Published for input: elements in paint order (bottom first), and
         // versions that tell the router when to rebuild or re-test.
@@ -91,12 +106,18 @@ namespace MenUI
         private readonly Action tickTasks;
         private float tickSeconds;
         internal readonly StyleAnimations styleAnimations;
+        internal readonly BackgroundWork background;
+        private readonly Signal<float> viewerDistance;
         /// Bumped after every layout, for bindings that read laid-out sizes
         /// (a scrollbar thumb's travel).
         internal readonly Signal<int> layoutTick;
 
         // Timings of the last Update, in stopwatch ticks (see MenUIApp.logPerformance).
         internal long styleTicks, layoutTicks, paintTicks, renderTicks, tickTicks, inputTicks;
+        /// For the periodic summary: panel renders so far, and the frame
+        /// tasks of the last frame that ran and that waited (suspended).
+        internal int renders;
+        internal int tasksRun, tasksWaiting;
         internal bool paintedThisFrame, groupsMovedThisFrame;
         /// Log what scroll views receive and compute (MenUIApp.logPerformance).
         internal bool diagnostics;
@@ -114,6 +135,8 @@ namespace MenUI
             router = new InputRouter(this);
             textInput = new TextInputCoordinator(this);
             styleAnimations = new StyleAnimations(this);
+            background = new BackgroundWork(this);
+            viewerDistance = new Signal<float>(runtime, 100000f);
             tickTasks = () => TickTasks();
             groups = new TransformGroups(bufferWidth, bufferHeight);
             layoutTick = new Signal<int>(runtime, 0);
@@ -136,7 +159,8 @@ namespace MenUI
                 }
             }
             this.renderer = renderer;
-            painter = new Painter(renderer);
+            // Without a renderer (tests), the records are painted all the same.
+            painter = new Painter(renderer != null ? renderer.records : new RecordBuffer(4096));
 
             // Both roots fill the panel; the overlay root is painted last and
             // ignores every clip and stacking context of the main tree.
@@ -218,6 +242,7 @@ namespace MenUI
         {
             e.layoutDirty = true;
             e.savedAnswerCount = -1;
+            e.stackCount = 0;
             e.validSincePass = pass;
             e.measureOverflowed = false;
             for (int i = 0; i < e.children.Count; i++)
@@ -406,6 +431,8 @@ namespace MenUI
 
         private void TickTasks()
         {
+            tasksRun = 0;
+            tasksWaiting = 0;
             // Backwards: tasks started meanwhile are appended and wait a frame.
             for (int i = animating.Count - 1; i >= 0; i--)
             {
@@ -413,7 +440,15 @@ namespace MenUI
                 {
                     continue;
                 }
-                if (!animating[i].Tick(tickSeconds))
+                IFrameTask task = animating[i];
+                Owner scope = task.Scope;
+                if (scope != null && scope.IsSuspended())
+                {
+                    tasksWaiting++;
+                    continue;   // out of sight: waits, costs nothing
+                }
+                tasksRun++;
+                if (!task.Tick(tickSeconds))
                 {
                     animating.RemoveAt(i);
                 }
@@ -481,8 +516,9 @@ namespace MenUI
                 return;
             }
             ComputedStyle s = e.computed;
+            // A prepared box is drawn at zero opacity until it is shown.
             groups.SetStyleTransform(group, s.numbers[StyleProperty.TranslateX], s.numbers[StyleProperty.TranslateY],
-                s.Scale, s.Opacity);
+                s.Scale, e.inert ? 0f : s.Opacity);
         }
 
         /// Whether `e` is in the panel's tree (or the overlay's).
@@ -533,9 +569,14 @@ namespace MenUI
                 {
                     needsLayout = false;
                     layout.Run(this);
-                    layoutVersion++;
-                    layoutTick.Value = layoutTick.Peek() + 1;
-                    needsPaint = true;
+                    // Only a layout that moved something is news (hit testing
+                    // tests again, bindings on sizes rerun).
+                    if (layout.arrangedCount > 0)
+                    {
+                        layoutVersion++;
+                        layoutTick.Value = layoutTick.Peek() + 1;
+                        needsPaint = true;
+                    }
                     long now = Stopwatch.GetTimestamp();
                     layoutTicks += now - mark;
                     mark = now;
@@ -550,7 +591,7 @@ namespace MenUI
             if (needsPaint)
             {
                 needsPaint = false;
-                if (atlasesChanged)
+                if (atlasesChanged && renderer != null)
                 {
                     atlasesChanged = false;
                     for (int i = 0; i < AtlasSlotCount; i++)
@@ -570,15 +611,16 @@ namespace MenUI
             {
                 groups.Resolve();
             }
-            if (groups.uploadPending)
+            if (groups.uploadPending && renderer != null)
             {
                 groups.uploadPending = false;
                 renderer.SetGroups(groups.offsets, groups.clips);
                 groupsMovedThisFrame = true;
                 render = true;
             }
-            if (render)
+            if (render && renderer != null)
             {
+                renders++;
                 renderer.Render();
                 renderTicks = Stopwatch.GetTimestamp() - mark;
             }
@@ -828,8 +870,9 @@ namespace MenUI
         /// the first time it is shown and then kept: switching back only
         /// hides and shows it — no rebuild, no restyle, its layout cached —
         /// far cheaper than Dynamic, for the memory (and running bindings) of
-        /// the hidden pages. With `preload`, the other pages are built ahead,
-        /// one per frame, so even a first visit is quick.
+        /// the hidden pages. With `preload`, the other pages are built ahead
+        /// in the background (see Deferred): styled and laid out out of
+        /// sight, a little every frame, so even a first visit is quick.
         public Region Pages(Func<int> index, params Func<Element>[] pages)
         {
             return Pages(index, false, pages);
@@ -840,21 +883,60 @@ namespace MenUI
             Region region = new Region(this);
             Owner scope = runtime.currentOwner;
             // Each page sits in a holder: `display: contents` when shown (the
-            // page lays out as the region's child), `none` when hidden.
+            // page lays out as the region's child), `none` when hidden, and
+            // an out-of-sight box while it is being preloaded.
             Box[] holders = new Box[pages.Length];
+            Owner[] owners = new Owner[pages.Length];
+            DeferredLoad[] loads = new DeferredLoad[pages.Length];
             int shown = -1;
+            // A hidden page is suspended: its animations wait, it costs nothing.
+            Action<int> show = i =>
+            {
+                Box holder = holders[i];
+                if (holder.inert)
+                {
+                    RevealContents(holder);
+                }
+                holder.Display(DisplayMode.Contents);
+                if (owners[i] != null)
+                {
+                    owners[i].suspended = false;
+                }
+            };
+            Action<int> hide = i =>
+            {
+                holders[i].Display(DisplayMode.None);
+                if (owners[i] != null)
+                {
+                    owners[i].suspended = true;
+                }
+            };
             Action<int> build = i =>
             {
-                if (i < 0 || i >= pages.Length || holders[i] != null)
+                if (i < 0 || i >= pages.Length)
+                {
+                    return;
+                }
+                if (loads[i] != null && !loads[i].finished)
+                {
+                    // Wanted now: stop preloading it, build it at once instead.
+                    loads[i].owner.Dispose();
+                    region.RemoveChild(holders[i]);
+                    loads[i] = null;
+                    holders[i] = null;
+                }
+                if (holders[i] != null)
                 {
                     return;
                 }
                 Box holder = Div().Display(DisplayMode.None);
                 Owner owner = new Owner(runtime, scope);
+                owner.suspended = true;
                 Element built = null;
                 runtime.RunWithOwner(owner, () => { built = pages[i](); });
                 holder.Child(built);
                 holders[i] = holder;
+                owners[i] = owner;
                 region.AppendChild(holder);
             };
             Effect watcher = new Effect(runtime, scope, () =>
@@ -867,43 +949,327 @@ namespace MenUI
                 build(current);
                 if (shown >= 0 && shown < holders.Length && holders[shown] != null)
                 {
-                    holders[shown].Display(DisplayMode.None);
+                    hide(shown);
                 }
                 if (current >= 0 && current < holders.Length && holders[current] != null)
                 {
-                    holders[current].Display(DisplayMode.Contents);
+                    show(current);
                 }
                 shown = current;
             });
             watcher.Run();
             if (preload)
             {
-                // After a short wait (the first frames are busy enough), one
-                // page per frame; then it stops.
-                int next = 0;
-                float wait = 0.5f;
-                Playback preloader = null;
-                preloader = EveryFrame(dt =>
+                for (int i = 0; i < pages.Length; i++)
                 {
-                    wait -= dt;
-                    if (wait > 0f)
+                    if (holders[i] != null)
                     {
+                        continue;
+                    }
+                    int page = i;
+                    Box holder = PrepareHidden(Div());
+                    holders[i] = holder;
+                    region.AppendChild(holder);
+                    Owner owner = new Owner(runtime, scope);
+                    owners[i] = owner;
+                    loads[i] = background.Start(owner, holder, load =>
+                    {
+                        load.Content.Child(pages[page]());
+                        return Task.CompletedTask;
+                    }, () =>
+                    {
+                        // Ready: hidden (and suspended) until chosen, then shown at once.
+                        RevealContents(holder);
+                        if (shown != page)
+                        {
+                            hide(page);
+                        }
+                        else
+                        {
+                            show(page);
+                        }
+                    });
+                }
+            }
+            return region;
+        }
+
+        // ---- background loading ------------------------------------------------------------
+
+        /// Milliseconds a frame may spend loading in the background (Deferred,
+        /// Pages preloading, Near), MenUI's own work that frame included;
+        /// at least one step runs every frame however busy it is.
+        public float BackgroundBudget
+        {
+            get { return background.budget; }
+            set { background.budget = Mathf.Max(0f, value); }
+        }
+
+        /// Shows `placeholder` (if any) while `build` fills `load.Content`
+        /// in the background — a little every frame, out of sight — then
+        /// shows the content in its place. The content box sits where the
+        /// placeholder is while it is prepared (laid out and drawn at zero
+        /// opacity now and then), so showing it moves and redraws nothing.
+        /// The placeholder plays its `:exit-to`. `load.Content` is a block box
+        /// in the placeholder's place: style it (FlexGrow, ...) as the
+        /// content's place needs.
+        public Region Deferred(Func<DeferredLoad, Task> build, Func<Element> placeholder = null)
+        {
+            Region region = new Region(this);
+            Owner scope = runtime.currentOwner;
+            Owner placeholderOwner = new Owner(runtime, scope);
+            Element shownPlaceholder = null;
+            runtime.RunWithOwner(placeholderOwner, () =>
+            {
+                shownPlaceholder = placeholder != null ? placeholder() : null;
+            });
+            if (shownPlaceholder == null)
+            {
+                shownPlaceholder = Div();   // an empty mark of the content's place
+            }
+            Box holder = Prepare(Div(), shownPlaceholder, false, scope);
+            region.AppendChild(holder);
+            region.AppendChild(shownPlaceholder);
+            Owner owner = new Owner(runtime, scope);
+            background.Start(owner, holder, build, () =>
+            {
+                Reveal(holder);
+                owner.suspended = false;
+                Element leaving = shownPlaceholder;
+                Leave(placeholderOwner, () => region.RemoveChild(leaving));
+            });
+            return region;
+        }
+
+        /// Deferred with a plain builder: it runs in one background step.
+        public Region Deferred(Func<Element> build, Func<Element> placeholder = null)
+        {
+            return Deferred(load =>
+            {
+                Element built = build();
+                if (built != null)
+                {
+                    load.Content.Child(built);
+                }
+                return Task.CompletedTask;
+            }, placeholder);
+        }
+
+        /// A box prepared out of sight on `anchor` (see Element.anchor): laid
+        /// out there, drawn at zero opacity through a GPU group of its own
+        /// (kept for the box's life), never hit. Without a free group it is
+        /// not drawn until shown.
+        private Box Prepare(Box holder, Element anchor, bool matchHeight, Owner scope)
+        {
+            holder.inert = true;
+            holder.anchor = anchor;
+            holder.matchAnchorHeight = matchHeight;
+            // A stacking context of its own keeps its records together: what
+            // is added inside repaints only its range.
+            holder.Absolute().Display(DisplayMode.Block).ZIndex(0);
+            if (!holder.ownsRecordRange)
+            {
+                holder.ownsRecordRange = true;
+                rangeOwners.Add(holder);
+            }
+            if (holder.translateGroup == TransformGroups.Root)
+            {
+                int group = groups.Allocate();
+                if (group != TransformGroups.Root)
+                {
+                    holder.translateGroup = group;
+                    holder.styleLayer = false;
+                    scope.OnCleanup(() =>
+                    {
+                        if (holder.translateGroup == group)
+                        {
+                            groups.Free(group);
+                            holder.translateGroup = TransformGroups.Root;
+                        }
+                    });
+                }
+            }
+            holder.MarkLayoutDirty(true);
+            SyncLayer(holder);
+            return holder;
+        }
+
+        /// Shows a prepared box in its anchor's place (in the flow, first):
+        /// its layout and records are ready, only its opacity changes.
+        private void Reveal(Box holder)
+        {
+            holder.inert = false;
+            holder.anchor = null;
+            holder.Position(PositionMode.Relative).Display(DisplayMode.Block);
+            SyncLayer(holder);
+            hitVersion++;   // can be hit now (range repaints of it out of sight did not say)
+            if (holder.translateGroup == TransformGroups.Root)
+            {
+                // Not drawn while prepared (no GPU group was free): drawn now.
+                paintStructureDirty = true;
+            }
+            needsPaint = true;
+        }
+
+        /// A page being preloaded (Pages): laid out at the region's width,
+        /// not drawn; shown later as `display: contents`.
+        private static Box PrepareHidden(Box holder)
+        {
+            holder.inert = true;
+            holder.Absolute().Left(0).Top(0).Right(0);
+            return holder;
+        }
+
+        private void RevealContents(Box holder)
+        {
+            holder.inert = false;
+            holder.Position(PositionMode.Relative).Left(Length.Auto).Top(Length.Auto).Right(Length.Auto)
+                .Display(DisplayMode.Contents);
+            paintStructureDirty = true;
+            needsPaint = true;
+        }
+
+        /// Runs the background loads for what is left of this frame's budget
+        /// (call at the end of the frame, after Update).
+        internal void RunBackground(double spentMilliseconds)
+        {
+            background.RunSlice(spentMilliseconds);
+        }
+
+        // ---- distance ------------------------------------------------------------------------
+
+        /// How far the viewer (the local player's head) is from the panel, in
+        /// meters (a dependency when read in a binding; updated a few times a
+        /// second by MenUIApp; very far until known).
+        public float ViewerDistance { get { return viewerDistance.Value; } }
+
+        internal void SetViewerDistance(float meters)
+        {
+            // Small moves are not changes: bindings rerun only on real ones.
+            if (Mathf.Abs(meters - viewerDistance.Peek()) >= 0.05f)
+            {
+                viewerDistance.Value = meters;
+            }
+        }
+
+        /// Shows `near` within `meters` of the viewer and `far` (if any)
+        /// beyond (with a little slack, so standing on the line does not
+        /// flicker). The near content is built in the background the first
+        /// time (the far one shows meanwhile); going away hides it — or,
+        /// with `unloadWhenFar`, removes it (its memory is freed; it is
+        /// built again next time).
+        public Region Near(float meters, Func<Element> near, Func<Element> far = null, bool unloadWhenFar = false)
+        {
+            return Near(meters, load =>
+            {
+                Element built = near();
+                if (built != null)
+                {
+                    load.Content.Child(built);
+                }
+                return Task.CompletedTask;
+            }, far, unloadWhenFar);
+        }
+
+        public Region Near(float meters, Func<DeferredLoad, Task> near, Func<Element> far = null, bool unloadWhenFar = false)
+        {
+            Region region = new Region(this);
+            Owner scope = runtime.currentOwner;
+            float leave = meters * 1.1f + 0.25f;
+            bool isNear = false;
+            bool initialized = false;
+            // Both contents live in boxes of their own that stay: the one in
+            // view is in the flow; the other sits on it, prepared (laid out,
+            // drawn at zero opacity). Switching swaps the two — no element
+            // added or removed, nothing redrawn but what moved.
+            Box farHolder = Div();
+            Owner farOwner = new Owner(runtime, scope);
+            runtime.RunWithOwner(farOwner, () =>
+            {
+                Element built = far != null ? far() : null;
+                if (built != null)
+                {
+                    farHolder.Child(built);
+                }
+            });
+            region.AppendChild(farHolder);
+            Owner nearOwner = null;
+            Box nearHolder = null;
+            bool nearReady = false;
+            // The side out of view is suspended: its animations wait.
+            Action showNear = () =>
+            {
+                Reveal(nearHolder);
+                nearOwner.suspended = false;
+                Prepare(farHolder, nearHolder, false, scope);
+                farOwner.suspended = true;
+            };
+            Action showFar = () =>
+            {
+                if (farHolder.inert)
+                {
+                    Reveal(farHolder);
+                }
+                farOwner.suspended = false;
+            };
+            Effect watcher = new Effect(runtime, scope, () =>
+            {
+                float distance = viewerDistance.Value;
+                bool next = isNear ? distance <= leave : distance <= meters;
+                if (initialized && next == isNear)
+                {
+                    return;
+                }
+                initialized = true;
+                isNear = next;
+                if (isNear)
+                {
+                    if (nearHolder != null && nearReady)
+                    {
+                        showNear();
                         return;
                     }
-                    while (next < pages.Length && holders[next] != null)
+                    if (nearHolder == null)
                     {
-                        next++;
+                        // Built in the background on the far content, which stays until it is ready.
+                        nearOwner = new Owner(runtime, scope);
+                        Box holder = Prepare(Div(), farHolder, false, nearOwner);
+                        nearHolder = holder;
+                        region.InsertChild(0, holder);
+                        background.Start(nearOwner, holder, near, () =>
+                        {
+                            nearReady = true;
+                            if (isNear)
+                            {
+                                showNear();
+                            }
+                        });
                     }
-                    if (next < pages.Length)
-                    {
-                        build(next);
-                    }
-                    else
-                    {
-                        preloader.Stop();
-                    }
-                });
-            }
+                    return;
+                }
+                if (nearHolder == null)
+                {
+                    return;
+                }
+                if (unloadWhenFar || !nearReady)
+                {
+                    showFar();
+                    Box leaving = nearHolder;
+                    Owner owner = nearOwner;
+                    nearHolder = null;
+                    nearOwner = null;
+                    nearReady = false;
+                    Leave(owner, () => region.RemoveChild(leaving));
+                }
+                else
+                {
+                    // Kept: prepared again on the far content, so coming back is only a switch.
+                    showFar();
+                    Prepare(nearHolder, farHolder, false, nearOwner);
+                    nearOwner.suspended = true;
+                }
+            });
+            watcher.Run();
             return region;
         }
 
@@ -1156,7 +1522,9 @@ namespace MenUI
                 thumb.Top(0).Bottom(0).Left(0).MinWidth(32)
                     .Width(() => Length.Percent(Proportion(state.ViewportWidth, state.ContentWidth)));
             }
-            track.Display(() => (vertical ? state.MaxOffsetY : state.MaxOffsetX) > 0.5f ? DisplayMode.Block : DisplayMode.None);
+            // Shown when there is something to scroll — or will be: content
+            // being loaded in the background counts (see ScrollState).
+            track.Display(() => (vertical ? state.NeedsBarY : state.NeedsBarX) ? DisplayMode.Block : DisplayMode.None);
 
             // Thumb position: moved on the GPU like the content.
             thumb.Translate(
@@ -1217,7 +1585,9 @@ namespace MenUI
         /// room otherwise). Give the returned box a size.
         public Box ScrollArea(ScrollState state, params Element[] children)
         {
-            ScrollView view = ScrollView(state).FlexGrow(1).MinWidth(0).Children(children);
+            // flex-basis 0: it fills the room anyway, so its content's natural
+            // width is never needed (measuring a long list for it is costly).
+            ScrollView view = ScrollView(state).FlexGrow(1).FlexBasis(0).MinWidth(0).Children(children);
             Box bar = Scrollbar(state).Margin(2).FlexShrink(0);
             // min-width/height 0: as a flex item it must be able to shrink below
             // its content (the scroll view's full content), the usual CSS

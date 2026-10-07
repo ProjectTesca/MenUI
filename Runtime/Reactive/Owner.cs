@@ -22,6 +22,22 @@ namespace MenUI
         /// Elements made in this scope that have an exit to play (see
         /// MenUIContext.Leave).
         internal List<Element> exitElements;
+        /// Out of sight (a hidden page, the other side of Near, content
+        /// being loaded): its animations and frame work wait (see
+        /// IFrameTask.Scope); it costs nothing until it is shown again.
+        internal bool suspended;
+
+        internal bool IsSuspended()
+        {
+            for (Owner o = this; o != null; o = o.parent)
+            {
+                if (o.suspended)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         internal Owner(ReactiveRuntime runtime, Owner parent)
         {

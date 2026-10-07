@@ -31,6 +31,10 @@ namespace MenUI
         protected void OnCleanup(Action cleanup) { context.OnCleanup(cleanup); }
         protected Region Show(Func<bool> condition, Func<Element> then, Func<Element> otherwise = null) { return context.Show(condition, then, otherwise); }
         protected Region Dynamic(Func<Element> build) { return context.Dynamic(build); }
+        protected Region Deferred(Func<DeferredLoad, System.Threading.Tasks.Task> build, Func<Element> placeholder = null) { return context.Deferred(build, placeholder); }
+        protected Region Deferred(Func<Element> build, Func<Element> placeholder = null) { return context.Deferred(build, placeholder); }
+        protected Region Near(float meters, Func<Element> near, Func<Element> far = null, bool unloadWhenFar = false) { return context.Near(meters, near, far, unloadWhenFar); }
+        protected Region Near(float meters, Func<DeferredLoad, System.Threading.Tasks.Task> near, Func<Element> far = null, bool unloadWhenFar = false) { return context.Near(meters, near, far, unloadWhenFar); }
         protected Region Pages(Func<int> index, params Func<Element>[] pages) { return context.Pages(index, pages); }
         protected Region Pages(Func<int> index, bool preload, params Func<Element>[] pages) { return context.Pages(index, preload, pages); }
         protected Region Overlay(Func<Element> content) { return context.Overlay(content); }

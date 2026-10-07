@@ -159,6 +159,7 @@ namespace MenUI
 
     internal sealed class VirtualListController<T> : IFrameTask
     {
+        Owner IFrameTask.Scope { get { return scope; } }
         private const float HiddenY = -100000f;
 
         private readonly MenUIContext context;

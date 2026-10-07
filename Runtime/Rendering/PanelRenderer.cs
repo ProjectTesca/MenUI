@@ -18,24 +18,15 @@ namespace MenUI
 {
     public sealed class PanelRenderer
     {
-        internal const int TexelsPerRecord = 8;
+        internal const int TexelsPerRecord = RecordBuffer.TexelsPerRecord;
 
         private readonly Camera camera;
         private readonly Renderer quadPool;
         private readonly Material material;
         private readonly Texture2D recordTexture;
-        private readonly Color[] pixels;
-        private readonly int capacity;
-        private int count;
-        private bool warnedFull;
-        private bool recordsChanged = true;
+        /// The records the painter writes (uploaded when changed).
+        internal readonly RecordBuffer records;
         private int uploadedCount = -1;
-
-        // Overwrite mode: records are rewritten in place in [cursor, end).
-        private bool overwriting;
-        private int overwriteCursor;
-        private int overwriteEnd;
-        private bool overwriteOverflowed;
 
         // The panel is drawn into the top-left `width` x `height` of the
         // target, which can be larger: a live resize within it only changes
@@ -48,11 +39,10 @@ namespace MenUI
         {
             this.camera = camera;
             this.quadPool = quadPool;
-            this.capacity = capacity;
+            records = new RecordBuffer(capacity);
             camera.enabled = false;
             quadPool.enabled = false;
 
-            pixels = new Color[capacity * TexelsPerRecord];
             recordTexture = new Texture2D(TexelsPerRecord, capacity, TextureFormat.RGBAFloat, false, true);
             recordTexture.filterMode = FilterMode.Point;
             recordTexture.wrapMode = TextureWrapMode.Clamp;
@@ -107,85 +97,19 @@ namespace MenUI
             }
         }
 
-        internal int RecordCount { get { return count; } }
-
-        internal void BeginRecords()
-        {
-            count = 0;
-        }
-
-        /// Rewrites `length` existing records from `start` instead of
-        /// appending. EndOverwrite says whether exactly that many were written.
-        internal void BeginOverwrite(int start, int length)
-        {
-            overwriting = true;
-            overwriteCursor = start;
-            overwriteEnd = start + length;
-            overwriteOverflowed = false;
-        }
-
-        internal bool EndOverwrite()
-        {
-            overwriting = false;
-            return !overwriteOverflowed && overwriteCursor == overwriteEnd;
-        }
-
-        internal int AllocateRecord()
-        {
-            if (overwriting)
-            {
-                if (overwriteCursor >= overwriteEnd)
-                {
-                    overwriteOverflowed = true;
-                    return -1;
-                }
-                return ClearRecord(overwriteCursor++);
-            }
-            if (count >= capacity)
-            {
-                if (!warnedFull)
-                {
-                    warnedFull = true;
-                    Debug.LogWarning("[MenUI] the panel needs more than " + capacity + " draw records; the rest are not drawn.");
-                }
-                return -1;
-            }
-            return ClearRecord(count++);
-        }
-
-        /// Clears the texels a primitive may leave unwritten.
-        private int ClearRecord(int record)
-        {
-            int b = record * TexelsPerRecord;
-            Color zero = new Color(0f, 0f, 0f, 0f);
-            pixels[b + 5] = zero;
-            pixels[b + 6] = zero;
-            pixels[b + 7] = zero;
-            return record;
-        }
-
-        internal void Texel(int record, int texel, float r, float g, float b, float a)
-        {
-            pixels[record * TexelsPerRecord + texel] = new Color(r, g, b, a);
-            recordsChanged = true;
-        }
-
-        internal void Texel(int record, int texel, Color color)
-        {
-            pixels[record * TexelsPerRecord + texel] = color;
-            recordsChanged = true;
-        }
+        internal int RecordCount { get { return records.RecordCount; } }
 
         internal void Render()
         {
             // Upload only when a record changed: a frame that just redraws
             // (new glyphs reaching the atlas, later: scrolling) skips it.
-            if (recordsChanged)
+            if (records.changed)
             {
-                recordsChanged = false;
-                recordTexture.SetPixels(pixels);
+                records.changed = false;
+                recordTexture.SetPixels(records.pixels);
                 recordTexture.Apply(false);
             }
+            int count = records.RecordCount;
             if (count != uploadedCount)
             {
                 uploadedCount = count;

@@ -20,6 +20,8 @@ using System.Collections.Generic;
 using MenSharp;
 using TMPro;
 using UnityEngine;
+using VRC.SDKBase;
+using System.Threading.Tasks;
 using Stopwatch = System.Diagnostics.Stopwatch;
 
 namespace MenUI
@@ -36,6 +38,13 @@ namespace MenUI
         [Tooltip("While playing, changing the size or scale above resizes the panel live. This point of the panel "
             + "stays in place (0,0 bottom-left, 0.5,0.5 center, 0,1 top-left).")]
         public Vector2 resizePivot = new Vector2(0.5f, 0.5f);
+
+        [Header("Distance")]
+        [Tooltip("Farther than this from the viewer (meters; 0: never), the panel sleeps: no updates, no drawing — "
+            + "it keeps showing its last image. It wakes when the viewer comes back.")]
+        public float sleepDistance = 0f;
+        [Tooltip("Sleep while no camera sees the panel (behind the viewer, out of sight).")]
+        public bool sleepWhenUnseen = true;
 
         [Header("Diagnostics")]
         [Tooltip("Log start-up timings, slow frames and a summary of the first seconds.")]
@@ -82,6 +91,17 @@ namespace MenUI
         private int worstFrameIndex;
         private float frameTimeSum;
         private double worstMenUI;
+
+        // The periodic summary (logPerformance): every SummarySeconds.
+        private const float SummarySeconds = 5f;
+        private float summaryStart;
+        private int summaryFrames, summaryAsleep, summaryRenders;
+        private double summaryWork, summaryWorst;
+
+        // Distance and sleep.
+        private const float DistanceInterval = 0.2f;   // seconds between measurements
+        private float distanceTimer;
+        private bool asleep;
 
         /// The panel's context: factory, reactive runtime and pipeline.
         protected MenUIContext UI { get { return ui; } }
@@ -139,6 +159,14 @@ namespace MenUI
             {
                 return;
             }
+            long frameStart = Stopwatch.GetTimestamp();
+            UpdateDistance();
+            if (asleep)
+            {
+                // Time stands still for it: animations resume where they were.
+                Summarize(Milliseconds(Stopwatch.GetTimestamp() - frameStart), true);
+                return;
+            }
             if (bufferWidth != appliedWidth || bufferHeight != appliedHeight || scale != appliedScale)
             {
                 ResizePanel(bufferWidth, bufferHeight, scale);
@@ -152,6 +180,10 @@ namespace MenUI
             ui.inputTicks = inputDone - ticked;
             ui.Update();
             double total = Milliseconds(Stopwatch.GetTimestamp() - start);
+            // Background loading gets what is left of its budget (it runs
+            // just after this event; see BackgroundWork).
+            ui.RunBackground(total);
+            Summarize(Milliseconds(Stopwatch.GetTimestamp() - frameStart), false);
             if (!logPerformance)
             {
                 return;
@@ -195,6 +227,78 @@ namespace MenUI
                         + " ms (frame " + worstFrameIndex + "); worst MenUI work " + worstMenUI.ToString("0.0") + " ms");
                 }
             }
+        }
+
+        /// Every few seconds (logPerformance): what the panel cost — frames,
+        /// frames asleep, renders of its texture, MenUI's work per frame, and
+        /// its frame tasks running or waiting (out of sight).
+        private void Summarize(double milliseconds, bool sleeping)
+        {
+            if (!logPerformance)
+            {
+                return;
+            }
+            summaryFrames++;
+            if (sleeping) summaryAsleep++;
+            summaryWork += milliseconds;
+            if (milliseconds > summaryWorst) summaryWorst = milliseconds;
+            float now = Time.realtimeSinceStartup;
+            if (summaryStart == 0f)
+            {
+                summaryStart = now;
+                summaryRenders = ui.renders;
+                return;
+            }
+            if (now - summaryStart < SummarySeconds)
+            {
+                return;
+            }
+            Debug.Log("[MenUI] " + gameObject.name + ", last " + SummarySeconds + " s: " + summaryFrames + " frames ("
+                + summaryAsleep + " asleep), " + (ui.renders - summaryRenders) + " renders, MenUI work average "
+                + (summaryWork / summaryFrames).ToString("0.00") + " ms, worst " + summaryWorst.ToString("0.0") + " ms; frame tasks "
+                + ui.tasksRun + " running, " + ui.tasksWaiting + " waiting (out of sight)");
+            summaryStart = now;
+            summaryRenders = ui.renders;
+            summaryFrames = 0;
+            summaryAsleep = 0;
+            summaryWork = 0;
+            summaryWorst = 0;
+        }
+
+        /// Measures the viewer's distance a few times a second (for
+        /// UI.ViewerDistance and Near), and puts the panel to sleep while it
+        /// is too far or unseen.
+        private void UpdateDistance()
+        {
+            distanceTimer -= Time.deltaTime;
+            if (distanceTimer > 0f)
+            {
+                return;
+            }
+            distanceTimer = DistanceInterval;
+            float distance = ViewerDistanceNow();
+            ui.SetViewerDistance(distance);
+            // A little slack, so standing on the line does not flicker.
+            bool tooFar = sleepDistance > 0f && distance > (asleep ? sleepDistance : sleepDistance * 1.05f + 0.25f);
+            bool unseen = sleepWhenUnseen && !displayRenderer.isVisible;
+            asleep = tooFar || unseen;
+        }
+
+        /// Meters from the local player's head to the nearest point of the
+        /// display (0 without a local player: always near).
+        private float ViewerDistanceNow()
+        {
+            VRCPlayerApi player = Networking.LocalPlayer;
+            if (player == null)
+            {
+                return 0f;
+            }
+            Vector3 viewer = player.GetTrackingData(VRCPlayerApi.TrackingDataType.Head).position;
+            Transform display = displayRenderer.transform;
+            Vector3 local = display.InverseTransformPoint(viewer);
+            Vector3 nearest = display.TransformPoint(new Vector3(Mathf.Clamp(local.x, -0.5f, 0.5f),
+                Mathf.Clamp(local.y, -0.5f, 0.5f), 0f));
+            return Vector3.Distance(viewer, nearest);
         }
 
         /// Resizes the panel while it runs: `width` x `height` physical pixels
@@ -297,6 +401,10 @@ namespace MenUI
         protected void OnCleanup(Action cleanup) { ui.OnCleanup(cleanup); }
         protected Region Show(Func<bool> condition, Func<Element> then, Func<Element> otherwise = null) { return ui.Show(condition, then, otherwise); }
         protected Region Dynamic(Func<Element> build) { return ui.Dynamic(build); }
+        protected Region Deferred(Func<DeferredLoad, Task> build, Func<Element> placeholder = null) { return ui.Deferred(build, placeholder); }
+        protected Region Deferred(Func<Element> build, Func<Element> placeholder = null) { return ui.Deferred(build, placeholder); }
+        protected Region Near(float meters, Func<Element> near, Func<Element> far = null, bool unloadWhenFar = false) { return ui.Near(meters, near, far, unloadWhenFar); }
+        protected Region Near(float meters, Func<DeferredLoad, Task> near, Func<Element> far = null, bool unloadWhenFar = false) { return ui.Near(meters, near, far, unloadWhenFar); }
         protected Region Pages(Func<int> index, params Func<Element>[] pages) { return ui.Pages(index, pages); }
         protected Region Pages(Func<int> index, bool preload, params Func<Element>[] pages) { return ui.Pages(index, preload, pages); }
         protected Region Overlay(Func<Element> content) { return ui.Overlay(content); }

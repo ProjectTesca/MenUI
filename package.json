@@ -12,7 +12,7 @@
   "samples": [
     {
       "displayName": "Demos",
-      "description": "A CSS tour (layout, borders, shadows, z-index, style sheets, buttons), scrolling with a 10,000-row virtual list, a drag-and-drop kanban board, a form with text boxes, the built-in components with a theme switch, live resizing, animation, and Material Design 3 Expressive.",
+      "description": "A CSS tour (layout, borders, shadows, z-index, style sheets, buttons), scrolling with a 10,000-row virtual list, a drag-and-drop kanban board, a form with text boxes, the built-in components with a theme switch, live resizing, animation, Material Design 3 Expressive, and background loading.",
       "path": "Samples~/Demos"
     }
   ]

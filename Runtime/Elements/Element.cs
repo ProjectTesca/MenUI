@@ -87,7 +87,7 @@ namespace MenUI
         // still matter to the parent was evicted, so the cache no longer lists
         // every question the parent asked (see ContentChanged).
         internal const int MeasureCacheSlots = 4;
-        internal readonly int[] measureCache = new int[MeasureCacheSlots * 6];
+        internal readonly int[] measureCache = new int[MeasureCacheSlots * LayoutEngine.CacheEntry];
         internal int measureCacheNext;
         internal bool measureOverflowed;
         /// Entries measured in an earlier pass than this describe content
@@ -99,6 +99,34 @@ namespace MenUI
         // If they all still hold, the parent's layout cannot change.
         // `savedAnswerCount` -1: unknown, the change must climb.
         internal int[] savedAnswers;
+        // A column's settled leading children (LayoutEngine, "stack"): the
+        // first `stackCount` children were laid out as they still are, so a
+        // layout that only added children after them starts at the first new
+        // one; with the inputs they were laid out with.
+        internal int stackCount;
+        internal int stackWidth, stackGap, stackOriginX, stackOriginY, stackLineCross, stackGroup;
+        internal int stackClipLeft, stackClipTop, stackClipRight, stackClipBottom;
+        internal bool stackWidthDefinite;
+        /// Its index among its parent's children while it is in that prefix,
+        /// and the prefix up to it: total height (gaps included), widest
+        /// outer width, number of in-flow items.
+        internal int stackIndex = int.MaxValue;
+        internal int stackEndMain, stackEndCross, stackEndItems;
+        // Painting's counterpart (Painter, record ranges): whether what this
+        // subtree draws is unchanged since it was painted, and a prefix of
+        // children, unchanged and in place, that a range repaint steps over.
+        // Positions are relative to the range owner's start.
+        internal bool paintClean;
+        internal int paintPrefix;
+        internal int paintPrefixGeneration;
+        internal Element paintPrefixOwner;
+        internal int childrenRecordStart, childrenOrderStart;
+        internal float paintedOpacity;
+        internal bool paintedKeep, paintedInert;
+        internal int paintIndex = int.MaxValue;
+        internal int paintEndRecord, paintEndOrder;
+        /// The range repaint that last listed it (Painter.rangeStamp).
+        internal int paintStamp;
         internal int savedAnswerCount = -1;
         internal int savedMinContent = -1;
         // The last content height its parent asked for (a flex column's
@@ -123,6 +151,54 @@ namespace MenUI
         /// (see MenUIContext.UpdateLayer), and is freed when no longer needed.
         internal bool styleLayer;
         internal bool layerCleanupRegistered;
+        /// Being prepared out of sight (background loading): styled and laid
+        /// out like the rest, but neither drawn nor hit, and changes inside
+        /// never repaint the panel.
+        internal bool inert;
+        /// Left out of layout for now (like `display: none`, but its layout
+        /// is kept): a background load lays its content out now and then,
+        /// not every frame (see BackgroundWork).
+        internal bool layoutPaused;
+        /// A prepared box sits exactly on this element (its left, top and
+        /// width; its height too with `matchAnchorHeight`), where it will be
+        /// shown: showing it then moves nothing.
+        internal Element anchor;
+        internal bool matchAnchorHeight;
+        /// Its content is being loaded right now (see BackgroundWork).
+        internal bool loading;
+        // A record range of its own (see Painter.RepaintRange): its subtree's
+        // records, with spare room after them, painted again on their own
+        // when something is added or removed inside — not the whole panel.
+        internal bool ownsRecordRange;
+        internal int recordRangeStart, recordRangeLength, recordRangeWanted;
+        internal int orderRangeStart, orderRangeCount;
+        internal int rangeGeneration = -1;
+        internal bool rangeRequested;
+
+        /// The nearest element (itself included) with a record range.
+        internal Element RangeOwner()
+        {
+            for (Element e = this; e != null; e = e.parent)
+            {
+                if (e.ownsRecordRange)
+                {
+                    return e;
+                }
+            }
+            return null;
+        }
+
+        internal bool InsidePausedLayout()
+        {
+            for (Element e = this; e != null; e = e.parent)
+            {
+                if (e.layoutPaused)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
         internal bool queuedForLayout;
 
         // Where this element's draw records went in the last full paint, so a
@@ -130,6 +206,8 @@ namespace MenUI
         internal int paintGeneration = -1;
         internal int boxRecordStart, boxRecordCount;
         internal int contentRecordStart, contentRecordCount;
+        /// During a full paint: its records may be copied from the last one.
+        internal bool reusePaint;
         internal bool queuedForPaint;
 
         protected Element(MenUIContext context)
@@ -165,7 +243,7 @@ namespace MenUI
             children.Add(child);
             MarkAttached(child);
             MarkLayoutDirty(false);
-            context.paintStructureDirty = true;
+            MarkStructureChanged();
         }
 
         internal void InsertChild(int index, Element child)
@@ -175,19 +253,25 @@ namespace MenUI
                 child.parent.RemoveChild(child);
             }
             child.parent = this;
+            if (index < stackCount) stackCount = index;
+            if (index < paintPrefix) paintPrefix = index;
             children.Insert(index, child);
             MarkAttached(child);
             MarkLayoutDirty(false);
-            context.paintStructureDirty = true;
+            MarkStructureChanged();
         }
 
         internal void RemoveChild(Element child)
         {
             if (children.Remove(child))
             {
+                TruncateStack(child);
+                child.stackIndex = int.MaxValue;
+                if (child.paintIndex < paintPrefix) paintPrefix = child.paintIndex;
+                child.paintIndex = int.MaxValue;
                 child.parent = null;
                 MarkLayoutDirty(false);
-                context.paintStructureDirty = true;
+                MarkStructureChanged();
             }
         }
 
@@ -197,22 +281,18 @@ namespace MenUI
         /// unchanged.
         internal void ReplaceChildren(List<Element> ordered)
         {
-            if (ordered.Count == children.Count)
+            int kept = 0;   // leading children that stay where they are
+            int shorter = ordered.Count < children.Count ? ordered.Count : children.Count;
+            while (kept < shorter && ordered[kept] == children[kept])
             {
-                bool same = true;
-                for (int i = 0; i < ordered.Count; i++)
-                {
-                    if (ordered[i] != children[i])
-                    {
-                        same = false;
-                        break;
-                    }
-                }
-                if (same)
-                {
-                    return;
-                }
+                kept++;
             }
+            if (kept == ordered.Count && kept == children.Count)
+            {
+                return;
+            }
+            if (kept < stackCount) stackCount = kept;
+            if (kept < paintPrefix) paintPrefix = kept;
             int stamp = ++context.reconcileStamp;
             for (int i = 0; i < ordered.Count; i++)
             {
@@ -241,21 +321,75 @@ namespace MenUI
                 children.Add(child);
             }
             MarkLayoutDirty(false);
-            context.paintStructureDirty = true;
+            MarkStructureChanged();
         }
 
         internal void RemoveAllChildren()
         {
+            stackCount = 0;
+            paintPrefix = 0;
             for (int i = 0; i < children.Count; i++)
             {
                 children[i].parent = null;
             }
             children.Clear();
             MarkLayoutDirty(false);
-            context.paintStructureDirty = true;
+            MarkStructureChanged();
         }
 
         // ---- dirty flags ---------------------------------------------------
+
+        /// The set or order of drawn things changed below this element: the
+        /// whole panel is painted again — unless it is being prepared out of
+        /// sight, where nothing is drawn yet.
+        internal void MarkStructureChanged()
+        {
+            // One walk up: the nearest record range, whether it is out of
+            // sight, and whether it is in the panel at all (a subtree being
+            // built detached draws nothing; attaching it marks the parent).
+            Element owner = null;
+            bool inert = false;
+            bool paused = false;
+            Element top = this;
+            for (Element e = this; e != null; e = e.parent)
+            {
+                if (owner == null && e.layoutPaused) paused = true;
+                if (owner == null && e.ownsRecordRange) owner = e;
+                if (e.inert) inert = true;
+                top = e;
+            }
+            if (top != context.root && top != context.overlayRoot)
+            {
+                return;
+            }
+            MarkPaintChanged();
+            if (owner != null)
+            {
+                // Content being loaded is not laid out yet: its range is
+                // painted again when it is (BackgroundWork.ResumeLayout).
+                if (!paused)
+                {
+                    context.RequestRangePaint(owner);   // only that range is painted again
+                }
+                return;
+            }
+            if (!inert)
+            {
+                context.paintStructureDirty = true;
+            }
+        }
+
+        internal bool InsideInert()
+        {
+            for (Element e = this; e != null; e = e.parent)
+            {
+                if (e.inert)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         internal void MarkStyleDirty()
         {
@@ -288,8 +422,13 @@ namespace MenUI
             LayoutEngine layout = context.layout;
             int nextPass = layout.NextPass;
             Element start = sizeMayChange && parent != null ? parent : this;
+            if (sizeMayChange)
+            {
+                stackCount = 0;   // its own style may have changed how it stacks
+            }
             if (start != this)
             {
+                parent.TruncateStack(this);
                 layoutDirty = true;
                 validSincePass = nextPass;
                 measureOverflowed = false;   // the parent measures afresh
@@ -300,8 +439,9 @@ namespace MenUI
                 start.queuedForLayout = true;
                 context.layoutQueue.Add(start);
             }
+            // No paint yet: a layout that moves something asks for one (content
+            // being loaded, whose layout waits, draws nothing meanwhile).
             context.needsLayout = true;
-            context.needsPaint = true;
         }
 
         /// Its size never depends on its content, so nothing outside it needs
@@ -366,8 +506,48 @@ namespace MenUI
             MarkLayoutDirty(false);
         }
 
+        /// What this element draws changes: it and its ancestors are no longer
+        /// unchanged, and no ancestor's painted prefix reaches over it. Stops
+        /// at an ancestor already marked (its own ancestors were then).
+        internal void MarkPaintChanged()
+        {
+            paintClean = false;
+            Element child = this;
+            for (Element p = parent; p != null; p = p.parent)
+            {
+                if (child.paintIndex < p.paintPrefix)
+                {
+                    p.paintPrefix = child.paintIndex;
+                }
+                if (!p.paintClean)
+                {
+                    return;
+                }
+                p.paintClean = false;
+                child = p;
+            }
+        }
+
+        /// `child` may no longer be laid out as it was: the settled prefix
+        /// of the children ends before it.
+        internal void TruncateStack(Element child)
+        {
+            if (child.stackIndex < stackCount)
+            {
+                stackCount = child.stackIndex;
+            }
+        }
+
         internal void MarkPaintDirty()
         {
+            if (paintGeneration != context.painter.Generation)
+            {
+                // Not drawn now (new, hidden, being loaded): nothing to paint
+                // again. Whatever makes it drawn paints it (a structure change,
+                // its ancestor, its record range).
+                return;
+            }
+            MarkPaintChanged();
             if (!queuedForPaint)
             {
                 queuedForPaint = true;

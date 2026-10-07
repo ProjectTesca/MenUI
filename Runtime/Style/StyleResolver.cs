@@ -300,7 +300,7 @@ namespace MenUI
                 || previousNumbers[StyleProperty.ZIndex] != computed.numbers[StyleProperty.ZIndex]
                 || previousUnits[StyleProperty.ZIndex] != computed.units[StyleProperty.ZIndex])
             {
-                element.context.paintStructureDirty = true;
+                element.MarkStructureChanged();
             }
 
             return previousNumbers[StyleProperty.FontSize] != computed.numbers[StyleProperty.FontSize]

@@ -38,6 +38,11 @@ namespace MenUI
         private readonly float[] offsetY = new float[Capacity];
         // The owner's own style: translate (added to the offset above, which
         // scrolling, `.Translate(() => ...)` and dragging set), scale, opacity.
+        // Where the group's own coordinates start, in its parent's: a scroll
+        // view lays its content out from its padding box (0, 0), so moving
+        // the view moves only this, not the content's layout.
+        private readonly float[] originX = new float[Capacity];
+        private readonly float[] originY = new float[Capacity];
         private readonly float[] styleX = new float[Capacity];
         private readonly float[] styleY = new float[Capacity];
         private readonly float[] scale = new float[Capacity];
@@ -99,6 +104,8 @@ namespace MenUI
                     offsetY[i] = 0f;
                     styleX[i] = 0f;
                     styleY[i] = 0f;
+                    originX[i] = 0f;
+                    originY[i] = 0f;
                     scale[i] = 1f;
                     alpha[i] = 1f;
                     clipLeft[i] = -Unbounded;
@@ -134,6 +141,19 @@ namespace MenUI
             }
             offsetX[group] = x;
             offsetY[group] = y;
+            dirty = true;
+        }
+
+        /// Where the group's coordinates start in its parent's (layout: a
+        /// scroll view's padding box).
+        internal void SetOrigin(int group, float x, float y)
+        {
+            if (group == Root || (originX[group] == x && originY[group] == y))
+            {
+                return;
+            }
+            originX[group] = x;
+            originY[group] = y;
             dirty = true;
         }
 
@@ -211,8 +231,8 @@ namespace MenUI
             float s = scale[group];
             float parentScale = parentTransform.z;
             // local(q) = q * s + pivot * (1 - s) + offset, then the parent's.
-            float localX = pivotX[group] * (1f - s) + offsetX[group] + styleX[group];
-            float localY = pivotY[group] * (1f - s) + offsetY[group] + styleY[group];
+            float localX = pivotX[group] * (1f - s) + offsetX[group] + styleX[group] + originX[group];
+            float localY = pivotY[group] * (1f - s) + offsetY[group] + styleY[group] + originY[group];
             offsets[group] = new Vector4(parentTransform.x + localX * parentScale, parentTransform.y + localY * parentScale,
                 parentScale * s, parentTransform.w * alpha[group]);
             clips[group] = new Vector4(

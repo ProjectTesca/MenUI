@@ -79,18 +79,21 @@ namespace MenUI
             return this;
         }
 
-        internal void ReportMetrics(int viewportWidth, int viewportHeight, int contentWidth, int contentHeight)
+        internal void ReportMetrics(int viewportWidth, int viewportHeight, int contentWidth, int contentHeight,
+            int preparedWidth = 0, int preparedHeight = 0)
         {
             if (context.diagnostics)
             {
                 Debug.Log("[MenUI] scroll view metrics (physical px): viewport " + viewportWidth + "x" + viewportHeight
                     + ", content " + contentWidth + "x" + contentHeight + ", axis " + axis);
             }
-            contentOriginX = x + (int)computed.numbers[StyleProperty.BorderLeftWidth];
-            contentOriginY = y + (int)computed.numbers[StyleProperty.BorderTopWidth];
+            // The content is laid out from the padding box's corner.
+            contentOriginX = 0;
+            contentOriginY = 0;
             state.SetMetrics(
                 ScrollsHorizontally ? viewportWidth : 0, ScrollsVertically ? viewportHeight : 0,
-                ScrollsHorizontally ? contentWidth : 0, ScrollsVertically ? contentHeight : 0);
+                ScrollsHorizontally ? contentWidth : 0, ScrollsVertically ? contentHeight : 0,
+                ScrollsHorizontally ? preparedWidth : 0, ScrollsVertically ? preparedHeight : 0);
         }
 
         private void OnWheel(PointerEvent e)

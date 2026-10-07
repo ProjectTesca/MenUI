@@ -345,6 +345,381 @@ namespace MenUI
         }
 
 
+        // Frames with background loading at their end (MenUI's own work: `spent` ms).
+        static void LoadFrames(MenUIContext ui, int count, double spent = 0)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                ui.Tick(1f / 60f);
+                Relayout(ui);
+                ui.RunBackground(spent);
+            }
+        }
+
+        // ---- background loading ----
+        static void LoadingTests()
+        {
+            {
+                var ui = NewContext(1f, 300, 300);
+                ui.BackgroundBudget = 0f;   // only the one step every frame gets
+                int rows = 0;
+                Box list = null;
+                Region deferred = ui.Deferred(async load =>
+                {
+                    list = ui.Div().Column();
+                    load.Content.Child(list);
+                    for (int i = 0; i < 30; i++)
+                    {
+                        list.Child(ui.Div().Height(10));
+                        rows++;
+                        load.Progress = (i + 1) / 30f;
+                        await load.Yield();
+                    }
+                }, () => ui.Div().Height(40).Tag("placeholder"));
+                Box after = ui.Div().Height(10);
+                Layout(ui, ui.Div().Children(deferred, after));
+                Check("deferred: placeholder first, nothing built yet", rows == 0 && after.Y == 40 && deferred.children.Count == 2);
+                ui.paintStructureDirty = false;
+                LoadFrames(ui, 2);
+                Box holder = (Box)deferred.children[0];
+                Check("deferred: one step a frame even with no budget", rows == 2, rows.ToString());
+                Check("deferred: not laid out every frame", list.Height == 0, R(list));
+                LoadFrames(ui, 15);
+                Relayout(ui);   // laid out now and then (every 0.25 s)
+                Element placeholderBox = deferred.children[1];
+                Check("deferred: laid out out of sight now and then, on the placeholder", holder.inert && list.Height > 100
+                    && list.Height < 300 && after.Y == 40 && holder.X == placeholderBox.X && holder.Y == placeholderBox.Y
+                    && holder.Width == placeholderBox.Width, R(list) + R(holder) + R(placeholderBox));
+                LoadFrames(ui, 20);
+                Relayout(ui);
+                Check("deferred: shown when done", rows == 30 && !holder.inert && after.Y == 300, R(after));
+                Settle(ui);
+                Check("deferred: the placeholder is gone", deferred.children.Count == 1);
+            }
+
+            {
+                // A generous budget: all in one frame.
+                var ui = NewContext(1f, 300, 300);
+                ui.BackgroundBudget = 1000f;
+                int steps = 0;
+                Region deferred = ui.Deferred(async load =>
+                {
+                    for (int i = 0; i < 20; i++) { steps++; load.Content.Child(ui.Div().Height(1)); await load.Yield(); }
+                });
+                Layout(ui, ui.Div().Children(deferred));
+                LoadFrames(ui, 1);
+                Check("deferred: a big budget finishes in one frame", steps == 20);
+            }
+
+            {
+                // Removed while loading: the load stops.
+                var ui = NewContext(1f, 300, 300);
+                ui.BackgroundBudget = 0f;
+                var show = ui.Signal(true);
+                int steps = 0, cleanups = 0;
+                Layout(ui, ui.Div().Children(ui.Show(() => show.Value, () => ui.Deferred(async load =>
+                {
+                    ui.OnCleanup(() => cleanups++);
+                    for (int i = 0; i < 10; i++) { steps++; await load.Yield(); }
+                }))));
+                LoadFrames(ui, 3);
+                show.Value = false;
+                LoadFrames(ui, 5);
+                Check("deferred: removed while loading stops it", steps == 3 && cleanups == 1, steps + " " + cleanups);
+            }
+
+            {
+                // Pages preloaded in the background.
+                var ui = NewContext(1f, 300, 300);
+                ui.BackgroundBudget = 0f;
+                var page = ui.Signal(0);
+                int builds = 0;
+                Region pages = ui.Pages(() => page.Value, true,
+                    () => { builds++; return ui.Div().Height(30); },
+                    () => { builds++; return ui.Div().Height(50); },
+                    () => { builds++; return ui.Div().Height(70); });
+                Box tail = ui.Div().Height(10);
+                Layout(ui, ui.Div().Children(pages, tail));
+                Check("preload: the shown page at once", builds == 1 && tail.Y == 30);
+                LoadFrames(ui, 60);
+                Check("preload: the others in the background", builds == 3 && tail.Y == 30, builds + " " + R(tail));
+                page.Value = 2;
+                Relayout(ui);
+                Check("preload: switching builds nothing", builds == 3 && tail.Y == 70, R(tail));
+            }
+
+            {
+                // Near: far content until the near one is ready; kept or unloaded when away.
+                var ui = NewContext(1f, 300, 300);
+                ui.BackgroundBudget = 0f;
+                int nearBuilds = 0, nearCleanups = 0;
+                Region near = ui.Near(3f, () =>
+                {
+                    nearBuilds++;
+                    ui.OnCleanup(() => nearCleanups++);
+                    return ui.Div().Height(80).Tag("near");
+                }, () => ui.Div().Height(20).Tag("far"));
+                Region unloading = ui.Near(3f, () => { ui.OnCleanup(() => nearCleanups += 100); return ui.Div().Height(5); },
+                    null, true);
+                Box tail = ui.Div().Height(10);
+                Layout(ui, ui.Div().Children(near, unloading, tail));
+                Check("near: far first", tail.Y == 20 && nearBuilds == 0);
+                ui.SetViewerDistance(2f);
+                Relayout(ui);
+                Check("near: far while the near one loads", tail.Y == 20 && nearBuilds == 0);
+                LoadFrames(ui, 3);
+                Settle(ui);
+                Check("near: near when ready", nearBuilds == 1 && tail.Y == 85, R(tail));
+                ui.SetViewerDistance(3.2f);   // inside the slack: stays near
+                Relayout(ui);
+                Check("near: no flicker on the line", tail.Y == 85);
+                ui.SetViewerDistance(10f);
+                Relayout(ui);
+                Settle(ui);
+                Check("near: far again, kept or unloaded as asked", tail.Y == 20 && nearCleanups == 100, nearCleanups + " " + R(tail));
+                ui.SetViewerDistance(1f);
+                Relayout(ui);
+                Settle(ui);
+                Check("near: back again: the kept one at once", nearBuilds == 1 && tail.Y >= 80, R(tail));
+            }
+
+            {
+                // Out of sight costs nothing: a kept Near side and a hidden page
+                // stop their animations (they wait, then go on where they were).
+                var ui = NewContext(1f, 300, 300);
+                ui.BackgroundBudget = 1000f;
+                AnimatedFloat nearValue = null, pageValue = null;
+                Region near = ui.Near(3f, () =>
+                {
+                    nearValue = ui.Animated(0f);
+                    nearValue.AnimateTo(100f, AnimationSpec.Tween(10f, Easing.Linear));
+                    return ui.Div().Height(80);
+                }, () => ui.Div().Height(20));
+                var page = ui.Signal(0);
+                Region pages = ui.Pages(() => page.Value,
+                    () => ui.Div().Height(30),
+                    () =>
+                    {
+                        pageValue = ui.Animated(0f);
+                        pageValue.AnimateTo(100f, AnimationSpec.Tween(10f, Easing.Linear));
+                        return ui.Div().Height(50);
+                    });
+                Layout(ui, ui.Div().Children(near, pages));
+                ui.SetViewerDistance(1f);
+                LoadFrames(ui, 3);
+                Settle(ui);
+                page.Value = 1;
+                LoadFrames(ui, 6);
+                float nearMoving = nearValue.Peek(), pageMoving = pageValue.Peek();
+                Check("hidden: shown parts animate", nearMoving > 0f && pageMoving > 0f, nearMoving + " " + pageMoving);
+
+                ui.SetViewerDistance(10f);
+                page.Value = 0;
+                LoadFrames(ui, 2);
+                float nearStopped = nearValue.Peek(), pageStopped = pageValue.Peek();
+                ui.Update();
+                int paints = 0;
+                for (int f = 0; f < 60; f++)
+                {
+                    ui.Tick(1f / 60f);
+                    ui.Update();
+                    if (ui.paintedThisFrame) paints++;
+                    ui.RunBackground(0);
+                }
+                Check("hidden: out of sight, animations wait", nearValue.Peek() == nearStopped && pageValue.Peek() == pageStopped
+                    && ui.tasksRun == 0 && ui.tasksWaiting == 2, nearValue.Peek() + " " + pageValue.Peek() + " " + ui.tasksRun + "/" + ui.tasksWaiting);
+                Check("hidden: nothing to lay out or paint while they wait", paints == 0 && !ui.needsLayout, paints.ToString());
+
+                ui.SetViewerDistance(1f);
+                page.Value = 1;
+                LoadFrames(ui, 3);
+                Check("hidden: shown again, they go on from where they were", nearValue.Peek() > nearStopped
+                    && nearValue.Peek() < nearStopped + 10f && pageValue.Peek() > pageStopped && pageValue.Peek() < pageStopped + 10f,
+                    nearValue.Peek() + " " + pageValue.Peek());
+            }
+        }
+
+
+
+        // ---- painting: incremental paints equal a fresh full paint ----
+        static void PaintTests()
+        {
+            var random = new System.Random(4321);
+            int mismatches = 0;
+            string first = "";
+            for (int round = 0; round < 150; round++)
+            {
+                var spec = RandomTree(random, 10 + random.Next(30));
+                var live = NewContext(1f, 400, 400);
+                var liveElements = BuildTree(live, spec);
+                live.root.AppendChild(liveElements[0]);
+                live.Update();
+                for (int step = 0; step < 10; step++)
+                {
+                    Mutate(random, spec, liveElements);
+                    live.Update();
+                    var fresh = NewContext(1f, 400, 400);
+                    var freshElements = BuildTree(fresh, spec);
+                    fresh.root.AppendChild(freshElements[0]);
+                    fresh.Update();
+                    string difference = CompareRecords(live, fresh) ?? live.painter.Verify(live);
+                    if (difference != null)
+                    {
+                        if (mismatches == 0) first = $"round {round} step {step}: {difference} (full paint {live.painter.lastPaintWasFull})";
+                        mismatches++;
+                        break;
+                    }
+                }
+            }
+            Check("paint: incremental records match a fresh paint", mismatches == 0, mismatches + " " + first);
+
+            {
+                // Inside a record range: children added, inserted, removed and
+                // reordered, restyled, faded out and in — the range repaint
+                // steps over its unchanged leading children and must still
+                // leave exactly what a paint from scratch would.
+                var rangeRandom = new System.Random(777);
+                string problem = null;
+                int skips = 0;
+                for (int round = 0; round < 80 && problem == null; round++)
+                {
+                    var ui = NewContext(1f, 400, 400);
+                    var spec = RandomTree(rangeRandom, 8 + rangeRandom.Next(12));
+                    var elements = BuildTree(ui, spec);
+                    var specOf = new System.Collections.Generic.Dictionary<Element, NodeSpec>();
+                    for (int i = 0; i < spec.Count; i++) specOf[elements[i]] = spec[i];
+                    Box owner = ui.Div().ZIndex(0);
+                    owner.ownsRecordRange = true;
+                    ui.rangeOwners.Add(owner);
+                    owner.Child(elements[0]);
+                    ui.root.AppendChild(ui.Div().Column().Children(ui.Div().Height(12).Background(Color.gray), owner,
+                        ui.Div().Height(12).Background(Color.gray)));
+                    ui.Update();
+                    for (int step = 0; step < 25 && problem == null; step++)
+                    {
+                        var all = new System.Collections.Generic.List<Element>();
+                        Walk(elements[0], all);
+                        var boxes = new System.Collections.Generic.List<Element>();
+                        foreach (var e in all) if (!specOf[e].text) boxes.Add(e);
+                        Element target = boxes[rangeRandom.Next(boxes.Count)];
+                        int kind = rangeRandom.Next(12);
+                        if (kind < 5)
+                        {
+                            for (int a = 1 + rangeRandom.Next(3); a > 0; a--)
+                            {
+                                var node = RandomNode(rangeRandom);
+                                node.position = 0;
+                                Element e = NewElement(ui, node);
+                                specOf[e] = node;
+                                target.AppendChild(e);
+                            }
+                        }
+                        else if (kind == 5)
+                        {
+                            var node = RandomNode(rangeRandom);
+                            Element e = NewElement(ui, node);
+                            specOf[e] = node;
+                            target.InsertChild(rangeRandom.Next(target.children.Count + 1), e);
+                        }
+                        else if (kind == 6 && all.Count > 2)
+                        {
+                            Element victim = all[1 + rangeRandom.Next(all.Count - 1)];
+                            victim.Parent.RemoveChild(victim);
+                        }
+                        else if (kind == 7 && target.children.Count > 1)
+                        {
+                            var ordered = new System.Collections.Generic.List<Element>(target.children);
+                            Element moved = ordered[0];
+                            ordered.RemoveAt(0);
+                            ordered.Add(moved);
+                            target.ReplaceChildren(ordered);
+                        }
+                        else if (kind == 8 && target != elements[0])
+                        {
+                            float[] opacities = { 0f, 0.5f, 1f };
+                            ((Box)target).Opacity(opacities[rangeRandom.Next(3)]);
+                        }
+                        else if (kind == 9 && target != elements[0])
+                        {
+                            ((Box)target).ZIndex(rangeRandom.Next(2) == 0 ? 1 : 0);
+                        }
+                        else
+                        {
+                            Element changed = all[rangeRandom.Next(all.Count)];
+                            var node = specOf[changed];
+                            if (node.text) { node.content = RandomWords(rangeRandom); ((FakeText)changed).Set(node.content); }
+                            else if (changed != elements[0]) { RandomSizes(rangeRandom, node); ApplySpec((Box)changed, node); }
+                        }
+                        ui.Update();
+                        problem = ui.painter.Verify(ui);
+                        if (problem != null) problem = $"round {round} step {step} kind {kind}: {problem} (full {ui.painter.lastPaintWasFull})";
+                        if (problem != null) { var everything = new System.Collections.Generic.List<Element>(); Walk(elements[0], everything); foreach (var pe in everything) if (!ui.paintOrder.Contains(pe)) Console.WriteLine($"  NOTPAINTED {pe.tag} rect {pe.X},{pe.Y} {pe.Width}x{pe.Height} box {pe.boxRecordStart}+{pe.boxRecordCount} pg {pe.paintGeneration} disp {pe.computed.Display} op {pe.computed.Opacity} ancestorsHidden {IsHidden(pe)} parentOp {(pe.Parent != null ? pe.Parent.computed.Opacity : 1)}"); }
+                    }
+                    skips += ui.painter.prefixSkips;
+                }
+                Check("paint: range repaints step over what is unchanged, and stay right", problem == null && skips > 50,
+                    (problem ?? "") + " skips " + skips);
+            }
+
+            {
+                // Loading into a record range, then showing it, then Near switching:
+                // the records stay right after every paint.
+                var ui = NewContext(1.5f, 900, 900);
+                MaterialDesign m3 = MaterialDesign.Of(ui);
+                ui.BackgroundBudget = 0f;
+                Region list = ui.Deferred(async load =>
+                {
+                    Box column = ui.Div().Column().Gap(2);
+                    load.Content.Child(column);
+                    for (int i = 0; i < 60; i++)
+                    {
+                        column.Child(ui.Div().Row().Gap(8).Padding(6).Background(i % 2 == 0 ? Color.white : Color.gray)
+                            .BorderRadius(4).Children(ui.Div().Size(10, 10).Background(Color.red)));
+                        await load.Yield();
+                    }
+                }, () => ui.Div().Height(40).Background(Color.blue));
+                Region near = ui.Near(2f, () => ui.Div().Height(80).Background(Color.green).BorderRadius(8),
+                    () => ui.Div().Height(20).Background(Color.yellow));
+                Box page = ui.Div().FullSize().Column().Gap(8).Padding(8).Children(near,
+                    ui.ScrollArea(ui.ScrollState(), list).FlexGrow(1).MinHeight(0));
+                ui.root.AppendChild(page);
+                string problem = null;
+                int rangePaints = 0, fullPaints = 0;
+                float[] distances = new float[120];
+                for (int f = 0; f < distances.Length; f++) distances[f] = f < 60 ? 10f : (f / 10) % 2 == 0 ? 1f : 10f;
+                for (int f = 0; f < distances.Length && problem == null; f++)
+                {
+                    ui.SetViewerDistance(distances[f]);
+                    ui.Tick(1f / 60f);
+                    bool requested = ui.rangeRequests.Count > 0;
+                    bool structure = ui.paintStructureDirty;
+                    ui.Update();
+                    if (ui.paintedThisFrame)
+                    {
+                        if (ui.painter.lastPaintWasFull) fullPaints++;
+                        else if (requested && !structure) rangePaints++;
+                    }
+                    problem = ui.painter.Verify(ui);
+                    if (problem != null) problem = "frame " + f + ": " + problem;
+                    ui.RunBackground(0);
+                }
+                Check("paint: records stay right through loading, showing and switching", problem == null, problem ?? "");
+                Check("paint: loading paints its range, not the panel", rangePaints > 0 && fullPaints < 8,
+                    "range paints " + rangePaints + ", full paints " + fullPaints);
+            }
+        }
+
+        static string CompareRecords(MenUIContext a, MenUIContext b)
+        {
+            RecordBuffer x = a.painter.records, y = b.painter.records;
+            if (x.RecordCount != y.RecordCount) return $"count {x.RecordCount} vs {y.RecordCount}";
+            for (int i = 0; i < x.RecordCount * RecordBuffer.TexelsPerRecord; i++)
+            {
+                if (x.pixels[i] != y.pixels[i]) return $"record {i / RecordBuffer.TexelsPerRecord} texel {i % RecordBuffer.TexelsPerRecord}: {x.pixels[i]} vs {y.pixels[i]}";
+            }
+            return null;
+        }
+
         static bool Near(float a, float b, float tolerance = 0.001f) => Mathf.Abs(a - b) <= tolerance;
 
         // ---- easing, motion, animated values ----
@@ -725,6 +1100,103 @@ namespace MenUI
             }
             Check("cutoff: incremental layout matches a fresh layout", mismatches == 0, mismatches + " " + firstMismatch);
 
+            // Randomized, with children added, inserted, removed and reordered
+            // (columns lay out only what follows their settled children).
+            var structureRandom = new System.Random(4321);
+            int structureMismatches = 0;
+            string firstStructureMismatch = "";
+            for (int round = 0; round < 60 && structureMismatches == 0; round++)
+            {
+                var spec = RandomTree(structureRandom, 12);
+                var live = NewContext(1f, 400, 400);
+                var liveElements = BuildTree(live, spec);
+                var specOf = new System.Collections.Generic.Dictionary<Element, NodeSpec>();
+                for (int i = 0; i < spec.Count; i++) specOf[liveElements[i]] = spec[i];
+                Layout(live, liveElements[0]);
+                for (int step = 0; step < 15 && structureMismatches == 0; step++)
+                {
+                    var boxes = new System.Collections.Generic.List<Element>();
+                    var all = new System.Collections.Generic.List<Element>();
+                    Walk(liveElements[0], all);
+                    foreach (var e in all) if (!specOf[e].text) boxes.Add(e);
+                    int kind = structureRandom.Next(10);
+                    Element target = boxes[structureRandom.Next(boxes.Count)];
+                    if (kind < 5)
+                    {
+                        // Append a few (the common case: a list growing).
+                        int added = 1 + structureRandom.Next(3);
+                        for (int a = 0; a < added; a++)
+                        {
+                            var node = RandomNode(structureRandom);
+                            Element e = NewElement(live, node);
+                            specOf[e] = node;
+                            target.AppendChild(e);
+                        }
+                    }
+                    else if (kind == 5)
+                    {
+                        var node = RandomNode(structureRandom);
+                        Element e = NewElement(live, node);
+                        specOf[e] = node;
+                        target.InsertChild(structureRandom.Next(target.children.Count + 1), e);
+                    }
+                    else if (kind == 6 && all.Count > 2)
+                    {
+                        Element victim = all[1 + structureRandom.Next(all.Count - 1)];
+                        victim.Parent.RemoveChild(victim);
+                    }
+                    else if (kind == 7 && target.children.Count > 1)
+                    {
+                        var ordered = new System.Collections.Generic.List<Element>(target.children);
+                        int from = structureRandom.Next(ordered.Count);
+                        Element moved = ordered[from];
+                        ordered.RemoveAt(from);
+                        ordered.Insert(structureRandom.Next(ordered.Count + 1), moved);
+                        if (structureRandom.Next(2) == 0)
+                        {
+                            var node = RandomNode(structureRandom);
+                            Element e = NewElement(live, node);
+                            specOf[e] = node;
+                            ordered.Add(e);
+                        }
+                        target.ReplaceChildren(ordered);
+                    }
+                    else
+                    {
+                        Element changed = all[structureRandom.Next(all.Count)];
+                        var node = specOf[changed];
+                        if (node.text) { node.content = RandomWords(structureRandom); ((FakeText)changed).Set(node.content); }
+                        else if (changed != liveElements[0])
+                        {
+                            if (structureRandom.Next(3) == 0) node.display = structureRandom.Next(3);
+                            else RandomSizes(structureRandom, node);
+                            ApplySpec((Box)changed, node);
+                        }
+                    }
+                    Relayout(live);
+                    var fresh = NewContext(1f, 400, 400);
+                    Element freshRoot = CloneTree(fresh, liveElements[0], specOf);
+                    Layout(fresh, freshRoot);
+                    var liveAll = new System.Collections.Generic.List<Element>();
+                    var freshAll = new System.Collections.Generic.List<Element>();
+                    Walk(liveElements[0], liveAll);
+                    Walk(freshRoot, freshAll);
+                    for (int i = 0; i < liveAll.Count; i++)
+                    {
+                        Element a = liveAll[i], b = freshAll[i];
+                        if (IsHidden(b)) continue;
+                        if (a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height)
+                        {
+                            firstStructureMismatch = $"round {round} step {step} kind {kind} node {i}: {R(a)} vs {R(b)}";
+                            structureMismatches++;
+                            break;
+                        }
+                    }
+                }
+            }
+            Check("stack: incremental layout matches a fresh one through added, moved and removed children",
+                structureMismatches == 0, firstStructureMismatch);
+
             // The fit-content shortcut for flex rows gives the same layout as the full measure.
             int differences = 0;
             string firstDifference = "";
@@ -754,6 +1226,41 @@ namespace MenUI
             Check("fit-content shortcut: same layout", differences == 0, differences + " " + firstDifference);
         }
 
+        static void Walk(Element e, System.Collections.Generic.List<Element> into)
+        {
+            into.Add(e);
+            for (int i = 0; i < e.children.Count; i++) Walk(e.children[i], into);
+        }
+
+        static NodeSpec RandomNode(System.Random random)
+        {
+            var node = new NodeSpec { text = random.Next(3) == 0 };
+            if (node.text) node.content = RandomWords(random);
+            else
+            {
+                node.display = random.Next(3);
+                node.wrap = random.Next(4) == 0;
+                node.align = random.Next(3);
+                RandomSizes(random, node);
+            }
+            return node;
+        }
+
+        static Element NewElement(MenUIContext ui, NodeSpec node)
+        {
+            if (node.text) return new FakeText(ui, node.content);
+            Box box = ui.Div();
+            ApplySpec(box, node);
+            return box;
+        }
+
+        static Element CloneTree(MenUIContext ui, Element source, System.Collections.Generic.Dictionary<Element, NodeSpec> specOf)
+        {
+            Element copy = NewElement(ui, specOf[source]);
+            for (int i = 0; i < source.children.Count; i++) copy.AppendChild(CloneTree(ui, source.children[i], specOf));
+            return copy;
+        }
+
         static bool IsHidden(Element e)
         {
             for (Element a = e; a != null; a = a.Parent)
@@ -778,6 +1285,7 @@ namespace MenUI
             public int position;      // 0 in flow, 1 absolute at left/top, 2 absolute inset on both sides
             public bool hidden, clip, noShrink;
             public int minWidth = -1;
+            public int look;          // background / border / radius / shadow variant
         }
 
         static System.Collections.Generic.List<NodeSpec> RandomTree(System.Random random, int count)
@@ -827,6 +1335,7 @@ namespace MenUI
             node.clip = random.Next(6) == 0;
             node.noShrink = random.Next(4) == 0;
             node.minWidth = random.Next(6) == 0 ? random.Next(80) : -1;
+            node.look = random.Next(6);
         }
 
         static System.Collections.Generic.List<Element> BuildTree(MenUIContext ui, System.Collections.Generic.List<NodeSpec> spec)
@@ -865,6 +1374,10 @@ namespace MenUI
             box.Overflow(node.clip ? OverflowMode.Hidden : OverflowMode.Visible);
             if (node.hidden && node.display == 0) box.Display(DisplayMode.None);
             box.Position(node.position == 0 ? PositionMode.Relative : PositionMode.Absolute);
+            // Something to draw: a background, sometimes a border, radius or shadow.
+            box.Background(node.look == 0 ? Colors.Transparent : Color.HSVToRGB(node.look / 6f, 0.5f, 0.8f))
+                .BorderRadius(node.look * 2).BorderWidth(node.look == 3 ? 2 : 0).BorderColor(Color.black)
+                .BoxShadow(node.look == 5 ? new[] { Shadow.Small } : new Shadow[0]);
             if (node.position == 2) box.Inset(3);
             else if (node.position == 1) box.Left(5).Top(7).Right(Length.Auto).Bottom(Length.Auto);
             else box.Left(Length.Auto).Top(Length.Auto).Right(Length.Auto).Bottom(Length.Auto);
@@ -2152,8 +2665,10 @@ namespace MenUI
                     && padded.Height == 40 + 10 && view.Width == 200, R(full) + " " + R(padded) + " " + R(view));
                 Check("resize: translation follows the scale", ui.groups.offsets[moved.group].x == 10f,
                     ui.groups.offsets[moved.group].x.ToString());
-                Check("resize: scroll offset follows the scale", ui.groups.offsets[view.children[0].group].y == -80f,
-                    ui.groups.offsets[view.children[0].group].y.ToString());
+                // The content is laid out from the view's corner: its group
+                // adds the view's position to the scroll offset.
+                Check("resize: scroll offset follows the scale", ui.groups.offsets[view.children[0].group].y == view.Y - 80f,
+                    ui.groups.offsets[view.children[0].group].y + " view " + view.Y);
                 Check("resize: logical size", ui.LogicalWidth == 300f && ui.LogicalHeight == 150f);
             }
 
@@ -2181,6 +2696,8 @@ namespace MenUI
             CutoffTests();
             LayerTests();
             MaterialTests();
+            LoadingTests();
+            PaintTests();
 
             Console.WriteLine(failures == 0 ? "ALL PASSED" : failures + " FAILED");
             return failures;

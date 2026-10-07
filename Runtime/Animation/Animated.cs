@@ -39,9 +39,13 @@ namespace MenUI
         private bool ticking;
         private bool disposed;
 
+        private readonly Owner scope;
+        Owner IFrameTask.Scope { get { return scope; } }
+
         internal AnimatedFloat(MenUIContext context, float initial)
         {
             this.context = context;
+            scope = context.runtime.currentOwner;
             signal = new Signal<float>(context.runtime, initial);
             track.value[0] = initial;
             track.to[0] = initial;
@@ -214,9 +218,13 @@ namespace MenUI
         private bool ticking;
         private bool disposed;
 
+        private readonly Owner scope;
+        Owner IFrameTask.Scope { get { return scope; } }
+
         internal AnimatedColor(MenUIContext context, Color initial)
         {
             this.context = context;
+            scope = context.runtime.currentOwner;
             signal = new Signal<Color>(context.runtime, initial);
             Load(track.value, initial);
             Load(track.to, initial);
@@ -382,8 +390,12 @@ namespace MenUI
 
         /// `duration` below 0: every frame until stopped, `frame` getting the
         /// seconds since the last frame.
+        private readonly Owner scope;
+        Owner IFrameTask.Scope { get { return scope; } }
+
         internal Playback(MenUIContext context, float duration, Easing easing, Action<float> frame, Action onComplete)
         {
+            scope = context.runtime.currentOwner;
             this.duration = duration;
             this.easing = easing;
             this.frame = frame;

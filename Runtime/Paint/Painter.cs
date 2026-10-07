@@ -43,8 +43,9 @@ namespace MenUI
         /// The record's kind texel holds kind + GroupStride * transform group.
         internal const float GroupStride = 16f;
 
-        private readonly PanelRenderer renderer;
+        private RecordBuffer renderer;   // swapped only by Verify (tests)
         private int generation;
+        private int previousGeneration;
         /// Elements drawn by the last full paint carry this paintGeneration.
         internal int Generation { get { return generation; } }
         // Every element whose box was painted, in paint order (bottom first),
@@ -57,18 +58,23 @@ namespace MenUI
         /// Painting inside a subtree whose opacity transitions: keep records
         /// even at zero alpha.
         private bool keepTransparent;
+        /// Painting a prepared box (inert, with a GPU group at zero opacity):
+        /// its records are made ahead, but nothing in it can be hit.
+        private bool insideInert;
 
-        internal Painter(PanelRenderer renderer)
+        internal Painter(RecordBuffer records)
         {
-            this.renderer = renderer;
+            renderer = records;
         }
+
+        internal RecordBuffer records { get { return renderer; } }
 
         /// Updates the records for everything queued; returns after a full
         /// paint or after rewriting just the queued elements' records.
         internal void Paint(MenUIContext context)
         {
             List<Element> queue = context.paintQueue;
-            bool repainted = !context.paintStructureDirty && generation > 0 && Repaint(queue);
+            bool repainted = !context.paintStructureDirty && generation > 0 && RepaintRanges(context) && Repaint(queue);
             lastPaintWasFull = !repainted;
             lastRepaintedCount = queue.Count;
             if (!repainted)
@@ -80,7 +86,238 @@ namespace MenUI
                 queue[i].queuedForPaint = false;
             }
             queue.Clear();
+            List<Element> requests = context.rangeRequests;
+            for (int i = 0; i < requests.Count; i++)
+            {
+                requests[i].rangeRequested = false;
+            }
+            requests.Clear();
             context.paintStructureDirty = false;
+        }
+
+#if MENUI_HEADLESS
+        /// Tests: whether the records are exactly what painting now would make
+        /// — each drawn element's records recomputed and compared, in paint
+        /// order, and every other record empty (nothing stale drawn). Null
+        /// when all is well, otherwise what is wrong.
+        internal string Verify(MenUIContext context)
+        {
+            RecordBuffer live = renderer;
+            RecordBuffer scratch = new RecordBuffer(live.capacity);
+            bool[] covered = new bool[live.capacity];
+            int lastStart = -1;
+            string problem = null;
+            for (int i = 0; i < paintOrder.Count && problem == null; i++)
+            {
+                Element e = paintOrder[i];
+                if (e.paintGeneration != generation)
+                {
+                    continue;   // past the capacity
+                }
+                if (e.boxRecordStart < lastStart)
+                {
+                    problem = "records out of paint order at " + e.tag;
+                    break;
+                }
+                lastStart = e.boxRecordStart;
+                float opacity = AncestorOpacity(e) * OwnOpacity(e);
+                keepTransparent = FadesInTree(e);
+                renderer = scratch;
+                scratch.BeginRecords();
+                if (opacity > 0f || keepTransparent) PaintBox(e, opacity);
+                int boxCount = scratch.RecordCount;
+                if (opacity > 0f || keepTransparent) e.PaintContent(this, opacity);
+                int contentCount = scratch.RecordCount - boxCount;
+                renderer = live;
+                keepTransparent = false;
+                problem = Same(live, e.boxRecordStart, e.boxRecordCount, scratch, 0, boxCount, e.tag + " box")
+                    ?? Same(live, e.contentRecordStart, e.contentRecordCount, scratch, boxCount, contentCount, e.tag + " content");
+                for (int r = 0; r < e.boxRecordCount; r++) covered[e.boxRecordStart + r] = true;
+                for (int r = 0; r < e.contentRecordCount; r++) covered[e.contentRecordStart + r] = true;
+            }
+            renderer = live;
+            for (int r = 0; r < live.RecordCount && problem == null; r++)
+            {
+                if (!covered[r] && live.pixels[r * RecordBuffer.TexelsPerRecord + 4].r > 0.5f)
+                {
+                    problem = "record " + r + " is drawn but belongs to nothing";
+                }
+            }
+            return problem;
+        }
+
+        private static string Same(RecordBuffer live, int liveStart, int liveCount, RecordBuffer expected, int start, int count, string what)
+        {
+            if (liveCount != count)
+            {
+                return what + ": " + liveCount + " records, expected " + count;
+            }
+            for (int i = 0; i < count * RecordBuffer.TexelsPerRecord; i++)
+            {
+                if (live.pixels[liveStart * RecordBuffer.TexelsPerRecord + i] != expected.pixels[start * RecordBuffer.TexelsPerRecord + i])
+                {
+                    return what + ": texel " + i + " differs";
+                }
+            }
+            return null;
+        }
+#endif
+
+        // ---- record ranges ------------------------------------------------------------
+
+        // A range repaint in progress: its owner, and the paint order being
+        // rewritten in place (entries past the old end are inserted at the end).
+        private Element rangeOwner;
+        private bool orderInPlace;
+        private int orderCursor, orderEnd;
+        private readonly List<Element> orderInserts = new List<Element>();
+        // Stacking contexts met (and left to their context) while painting flow.
+        private int contextsPassed;
+        /// Settled prefixes stepped over (diagnostics and tests).
+        internal int prefixSkips;
+
+        // Each range repaint's number, and the elements it took out of the
+        // paint order: those it did not draw again are no longer drawn.
+        private int rangeStamp;
+        private readonly List<Element> displaced = new List<Element>();
+
+        private void AddOrder(Element e)
+        {
+            if (!orderInPlace)
+            {
+                paintOrder.Add(e);
+                return;
+            }
+            e.paintStamp = rangeStamp;
+            if (orderCursor < orderEnd)
+            {
+                Element old = paintOrder[orderCursor];
+                if (old != e)
+                {
+                    displaced.Add(old);
+                }
+                paintOrder[orderCursor] = e;
+                orderCursor++;
+            }
+            else
+            {
+                orderInserts.Add(e);
+            }
+        }
+
+        private bool RepaintRanges(MenUIContext context)
+        {
+            List<Element> requests = context.rangeRequests;
+            for (int i = 0; i < requests.Count; i++)
+            {
+                if (!RepaintRange(requests[i], context))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// Paints a record range again on its own: its elements in paint
+        /// order (unchanged ones copied over), then empty records up to its
+        /// end. False when it no longer fits (a full paint then gives it
+        /// more room) or it was not painted as a range last time.
+        private bool RepaintRange(Element owner, MenUIContext context)
+        {
+            if (owner.rangeGeneration != generation || owner.paintGeneration != generation || !context.IsAttached(owner)
+                || owner.computed.Display == DisplayMode.None || !CreatesContext(owner))
+            {
+                return false;
+            }
+            int savedPrevious = previousGeneration;
+            previousGeneration = generation;
+            keepTransparent = FadesInTree(owner);
+            insideInert = owner.InsideInert();
+            // Its records and its part of the paint order (hit testing) are
+            // rewritten in place: what is unchanged and where it was is
+            // stepped over (see PaintFlowChildren).
+            rangeOwner = owner;
+            orderInPlace = true;
+            rangeStamp++;
+            displaced.Clear();
+            orderCursor = owner.orderRangeStart;
+            orderEnd = owner.orderRangeStart + owner.orderRangeCount;
+            orderInserts.Clear();
+            renderer.BeginRange(owner.recordRangeStart, owner.recordRangeLength);
+            PaintContextContent(owner, AncestorOpacity(owner) * OwnOpacity(owner));
+            bool fits = renderer.EndRange();
+            bool hittable = !insideInert;
+            keepTransparent = false;
+            insideInert = false;
+            rangeOwner = null;
+            orderInPlace = false;
+            previousGeneration = savedPrevious;
+            int newCount;
+            if (orderInserts.Count > 0)
+            {
+                paintOrder.InsertRange(orderEnd, orderInserts);
+                newCount = orderEnd - owner.orderRangeStart + orderInserts.Count;
+                orderInserts.Clear();
+            }
+            else
+            {
+                for (int i = orderCursor; i < orderEnd; i++)
+                {
+                    displaced.Add(paintOrder[i]);
+                }
+                if (orderCursor < orderEnd)
+                {
+                    paintOrder.RemoveRange(orderCursor, orderEnd - orderCursor);
+                }
+                newCount = orderCursor - owner.orderRangeStart;
+            }
+            // Hidden or removed since: their old record slots now belong to
+            // others, so nothing may be rewritten there in their name.
+            for (int i = 0; i < displaced.Count; i++)
+            {
+                if (displaced[i].paintStamp != rangeStamp)
+                {
+                    displaced[i].paintGeneration = -1;
+                }
+            }
+            displaced.Clear();
+            if (!fits)
+            {
+                owner.recordRangeWanted = owner.recordRangeLength * 2;
+                return false;
+            }
+            int delta = newCount - owner.orderRangeCount;
+            List<Element> owners = context.rangeOwners;
+            for (int i = 0; i < owners.Count; i++)
+            {
+                Element other = owners[i];
+                if (other != owner && other.rangeGeneration == generation && other.orderRangeStart > owner.orderRangeStart)
+                {
+                    other.orderRangeStart += delta;
+                }
+            }
+            owner.orderRangeCount = newCount;
+            if (hittable || delta != 0)
+            {
+                context.hitVersion++;   // out of sight, nothing in it can be hit yet (Reveal says when)
+            }
+            return true;
+        }
+
+        /// In a full paint: the owner's records, then room to grow.
+        private void PaintOwnedRange(Element owner, float opacity)
+        {
+            int start = renderer.RecordCount;
+            int orderStart = paintOrder.Count;
+            PaintContextContent(owner, opacity);
+            int used = renderer.RecordCount - start;
+            int room = Mathf.Max(Mathf.Max(64, used / 2), owner.recordRangeWanted - used);
+            renderer.AppendEmpty(room);
+            owner.recordRangeStart = start;
+            owner.recordRangeLength = renderer.RecordCount - start;
+            owner.orderRangeStart = orderStart;
+            owner.orderRangeCount = paintOrder.Count - orderStart;
+            owner.rangeGeneration = renderer.Overflowed ? -1 : generation;
         }
 
         private bool Repaint(List<Element> queue)
@@ -122,8 +359,13 @@ namespace MenUI
             return true;
         }
 
+        /// Paints every record again, in order. An element drawn by the last
+        /// full paint and not changed since (not queued) has its records
+        /// copied over in bulk instead of computed: a structural change (an
+        /// element added or removed) costs little more than the change.
         private void PaintAll(MenUIContext context)
         {
+            previousGeneration = generation;
             generation++;
             renderer.BeginRecords();
             paintOrder = context.paintOrder;
@@ -132,6 +374,7 @@ namespace MenUI
             Element root = context.root;
             Element overlayRoot = context.overlayRoot;
             keepTransparent = false;
+            insideInert = false;
             if (root.computed.Display != DisplayMode.None)
             {
                 PaintContext(root, OwnOpacity(root));
@@ -162,18 +405,55 @@ namespace MenUI
 
         private void PaintOwnBox(Element e, float opacity)
         {
-            paintOrder.Add(e);
+            e.reusePaint = !e.queuedForPaint && e.paintGeneration == previousGeneration && previousGeneration > 0;
+            int start = renderer.RecordCount;
+            if (e.reusePaint)
+            {
+                renderer.CopyPrevious(e.boxRecordStart, e.boxRecordCount);
+            }
+            else
+            {
+                PaintBox(e, opacity);
+            }
+            e.boxRecordStart = start;
+            e.boxRecordCount = renderer.RecordCount - start;
+            if (renderer.Overflowed)
+            {
+                // Past the capacity: not drawn, not hit, never repainted in place.
+                e.paintGeneration = -1;
+                return;
+            }
             e.paintGeneration = generation;
-            e.boxRecordStart = renderer.RecordCount;
-            PaintBox(e, opacity);
-            e.boxRecordCount = renderer.RecordCount - e.boxRecordStart;
+            // Prepared boxes are listed too (hit testing skips them while
+            // they are out of sight), so showing one needs no new paint order.
+            AddOrder(e);
+        }
+
+        /// A box out of sight is skipped — unless it is prepared with a GPU
+        /// group of its own (drawn at zero opacity: its records exist before
+        /// it is shown).
+        private static bool SkipsInert(Element e)
+        {
+            return e.inert && e.translateGroup == TransformGroups.Root;
         }
 
         private void PaintOwnContent(Element e, float opacity)
         {
-            e.contentRecordStart = renderer.RecordCount;
-            e.PaintContent(this, opacity);
-            e.contentRecordCount = renderer.RecordCount - e.contentRecordStart;
+            int start = renderer.RecordCount;
+            if (e.reusePaint)
+            {
+                renderer.CopyPrevious(e.contentRecordStart, e.contentRecordCount);
+            }
+            else
+            {
+                e.PaintContent(this, opacity);
+            }
+            e.contentRecordStart = start;
+            e.contentRecordCount = renderer.RecordCount - start;
+            if (renderer.Overflowed)
+            {
+                e.paintGeneration = -1;
+            }
         }
 
         private static bool CreatesContext(Element e)
@@ -184,12 +464,22 @@ namespace MenUI
         private void PaintContext(Element context, float opacity)
         {
             bool saved = keepTransparent;
+            bool savedInert = insideInert;
             keepTransparent = FadesInTree(context);
+            insideInert = context.InsideInert();
             if (opacity > 0f || keepTransparent)
             {
-                PaintContextContent(context, opacity);
+                if (context.ownsRecordRange)
+                {
+                    PaintOwnedRange(context, opacity);
+                }
+                else
+                {
+                    PaintContextContent(context, opacity);
+                }
             }
             keepTransparent = saved;
+            insideInert = savedInert;
         }
 
         private void PaintContextContent(Element context, float opacity)
@@ -197,7 +487,7 @@ namespace MenUI
             PaintOwnBox(context, opacity);
 
             List<Element> contexts = new List<Element>();
-            CollectContexts(context, contexts);
+            CollectContexts(context, contexts, generation);
             SortByZIndex(contexts);
 
             int index = 0;
@@ -213,6 +503,7 @@ namespace MenUI
                 Element child = contexts[index];
                 PaintContext(child, AncestorOpacity(child) * OwnOpacity(child));
             }
+            context.paintClean = true;
         }
 
         private void PaintFlow(Element e, float opacity)
@@ -229,27 +520,84 @@ namespace MenUI
                 PaintFlowChildren(e, opacity);
             }
             keepTransparent = saved;
+            e.paintClean = true;
         }
 
         private void PaintFlowChildren(Element e, float opacity)
         {
-            for (int i = 0; i < e.children.Count; i++)
+            int first = 0;
+            bool extending = false;
+            if (rangeOwner != null)
+            {
+                // Inside a range repaint: the leading children that are
+                // unchanged, context-free and where they were last time are
+                // stepped over — records and paint order entries stay put.
+                int recordHere = renderer.RecordCount - rangeOwner.recordRangeStart;
+                int orderHere = orderCursor - rangeOwner.orderRangeStart;
+                if (e.paintPrefix > 0 && e.paintPrefixGeneration == generation && e.paintPrefixOwner == rangeOwner
+                    && e.childrenRecordStart == recordHere && e.childrenOrderStart == orderHere && orderInserts.Count == 0
+                    && e.paintedOpacity == opacity && e.paintedKeep == keepTransparent && e.paintedInert == insideInert)
+                {
+                    Element last = e.children[e.paintPrefix - 1];
+                    int orderSteps = last.paintEndOrder - orderHere;
+                    if (orderCursor + orderSteps <= orderEnd)
+                    {
+                        prefixSkips++;
+                        renderer.SkipInRange(last.paintEndRecord - recordHere);
+                        orderCursor += orderSteps;
+                        first = e.paintPrefix;
+                    }
+                }
+                if (first == 0)
+                {
+                    e.paintPrefix = 0;
+                    e.paintPrefixGeneration = generation;
+                    e.paintPrefixOwner = rangeOwner;
+                    e.childrenRecordStart = recordHere;
+                    e.childrenOrderStart = orderHere;
+                    e.paintedOpacity = opacity;
+                    e.paintedKeep = keepTransparent;
+                    e.paintedInert = insideInert;
+                }
+                extending = e.paintPrefix == first;
+            }
+            for (int i = first; i < e.children.Count; i++)
             {
                 Element child = e.children[i];
-                if (child.computed.Display == DisplayMode.None || CreatesContext(child))
+                if (child.computed.Display == DisplayMode.None || SkipsInert(child) || CreatesContext(child))
                 {
+                    if (CreatesContext(child)) contextsPassed++;
+                    extending = false;
                     continue;
                 }
+                int contextsBefore = contextsPassed;
+                bool saved = insideInert;
+                insideInert = saved || child.inert;
                 PaintFlow(child, opacity * OwnOpacity(child));
+                insideInert = saved;
+                if (extending)
+                {
+                    if (contextsPassed != contextsBefore || renderer.Overflowed || child.paintGeneration != generation)
+                    {
+                        extending = false;
+                        continue;
+                    }
+                    child.paintIndex = i;
+                    child.paintEndRecord = renderer.RecordCount - rangeOwner.recordRangeStart;
+                    child.paintEndOrder = (orderInserts.Count > 0 ? orderEnd + orderInserts.Count : orderCursor) - rangeOwner.orderRangeStart;
+                    e.paintPrefix = i + 1;
+                }
             }
         }
 
-        private static void CollectContexts(Element e, List<Element> into)
+        private static void CollectContexts(Element e, List<Element> into, int generation)
         {
-            for (int i = 0; i < e.children.Count; i++)
+            // A settled prefix holds no stacking context (see PaintFlowChildren).
+            int first = e.paintPrefixGeneration == generation ? e.paintPrefix : 0;
+            for (int i = first; i < e.children.Count; i++)
             {
                 Element child = e.children[i];
-                if (child.computed.Display == DisplayMode.None)
+                if (child.computed.Display == DisplayMode.None || SkipsInert(child))
                 {
                     continue;
                 }
@@ -259,7 +607,7 @@ namespace MenUI
                 }
                 else
                 {
-                    CollectContexts(child, into);
+                    CollectContexts(child, into, generation);
                 }
             }
         }
@@ -492,7 +840,7 @@ namespace MenUI
         internal void Ripple(Element e, float centerX, float centerY, float radius, float soft,
             Vector4 box, Vector4 radii, Color color, float opacity)
         {
-            int record = Begin(e, box.x, box.y, box.z, box.w);
+            int record = BeginSteady(e, box.x, box.y, box.z, box.w);
             if (record < 0) return;
             renderer.Texel(record, 2, Premultiplied(color, opacity));
             renderer.Texel(record, 3, radii.x, radii.y, radii.z, radii.w);
@@ -507,7 +855,7 @@ namespace MenUI
         internal void Shape(Element e, float x, float y, float width, float height, ShapeSpec from, ShapeSpec to,
             float morph, float rotation, Color color, float opacity)
         {
-            int record = Begin(e, x - 1f, y - 1f, width + 2f, height + 2f);
+            int record = BeginSteady(e, x - 1f, y - 1f, width + 2f, height + 2f);
             if (record < 0) return;
             renderer.Texel(record, 2, Premultiplied(color, opacity));
             renderer.Texel(record, 3, from.kind, from.count, from.amount, from.rotation * Mathf.Deg2Rad);
@@ -524,7 +872,7 @@ namespace MenUI
             float amplitude, float waves, float phase, Color color, float opacity)
         {
             float reach = radius + Mathf.Abs(amplitude) + thickness * 0.5f + 1f;
-            int record = Begin(e, centerX - reach, centerY - reach, reach * 2f, reach * 2f);
+            int record = BeginSteady(e, centerX - reach, centerY - reach, reach * 2f, reach * 2f);
             if (record < 0) return;
             renderer.Texel(record, 2, Premultiplied(color, opacity));
             renderer.Texel(record, 3, amplitude, waves, phase, 0f);
@@ -540,7 +888,7 @@ namespace MenUI
         {
             float reachX = thickness * 0.5f + 1f;
             float reachY = Mathf.Abs(amplitude) + thickness * 0.5f + 1f;
-            int record = Begin(e, x0 - reachX, y - reachY, (x1 - x0) + reachX * 2f, reachY * 2f);
+            int record = BeginSteady(e, x0 - reachX, y - reachY, (x1 - x0) + reachX * 2f, reachY * 2f);
             if (record < 0) return;
             renderer.Texel(record, 2, Premultiplied(color, opacity));
             renderer.Texel(record, 3, amplitude, wavelength, phase, 0f);
@@ -596,12 +944,24 @@ namespace MenUI
         /// A rounded rectangle (x, y, width, height, radii), no border.
         internal void Box(Element e, Vector4 box, Vector4 radii, Color color, float opacity)
         {
-            int record = Begin(e, box.x, box.y, box.z, box.w);
+            int record = BeginSteady(e, box.x, box.y, box.z, box.w);
             if (record < 0) return;
             renderer.Texel(record, 2, Premultiplied(color, opacity));
             renderer.Texel(record, 3, radii.x, radii.y, radii.z, radii.w);
             renderer.Texel(record, 4, KindRoundedRectangle + GroupStride * e.group, 0f, 0f, 0f);
             renderer.Texel(record, 7, box.x, box.y, box.z, box.w);
+        }
+
+        /// Like Begin, but a record even when the quad is clipped away (an
+        /// empty quad then): graphics keep a steady number of records while
+        /// they move, so they repaint in place.
+        private int BeginSteady(Element e, float x, float y, float width, float height)
+        {
+            if (x >= e.clipRight || y >= e.clipBottom || x + width <= e.clipLeft || y + height <= e.clipTop)
+            {
+                return Begin(e.clipLeft, e.clipTop, 0f, 0f, int.MinValue / 2, int.MinValue / 2, int.MaxValue / 2, int.MaxValue / 2);
+            }
+            return Begin(e, x, y, width, height);
         }
 
         /// Starts a record with its quad and the element's clip; -1 when the
@@ -627,10 +987,22 @@ namespace MenUI
             return record;
         }
 
+#if MENUI_HEADLESS
+        private static float ToLinear(float channel)
+        {
+            return channel <= 0.04045f ? channel / 12.92f : Mathf.Pow((channel + 0.055f) / 1.055f, 2.4f);
+        }
+#endif
+
         /// Linear color with opacity applied (the shader premultiplies).
         private static Color Premultiplied(Color color, float opacity)
         {
+#if MENUI_HEADLESS
+            // Tests run without Unity's native code: the same conversion in C#.
+            Color linear = new Color(ToLinear(color.r), ToLinear(color.g), ToLinear(color.b), color.a);
+#else
             Color linear = color.linear;
+#endif
             linear.a = color.a * opacity;
             return linear;
         }

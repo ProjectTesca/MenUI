@@ -20,6 +20,10 @@ namespace MenUI
     {
         /// Returns false once there is nothing left to do.
         bool Tick(float seconds);
+
+        /// The scope it belongs to (null: none): while that scope is
+        /// suspended (out of sight), the task waits, where it was.
+        Owner Scope { get; }
     }
 
     public sealed class ScrollState : IFrameTask
@@ -40,15 +44,21 @@ namespace MenUI
         private float velocityY;
         internal bool animating;
 
+        private readonly Owner scope;
+        Owner IFrameTask.Scope { get { return scope; } }
+
         internal ScrollState(MenUIContext context)
         {
             this.context = context;
+            scope = context.runtime.currentOwner;
             offsetX = context.Signal(0f);
             offsetY = context.Signal(0f);
             viewportWidth = context.Signal(0f);
             viewportHeight = context.Signal(0f);
             contentWidth = context.Signal(0f);
             contentHeight = context.Signal(0f);
+            preparedWidth = context.Signal(0f);
+            preparedHeight = context.Signal(0f);
         }
 
         public float OffsetX { get { return offsetX.Value; } }
@@ -59,6 +69,15 @@ namespace MenUI
         public float ContentHeight { get { return contentHeight.Value; } }
         public float MaxOffsetX { get { return Mathf.Max(0f, contentWidth.Value - viewportWidth.Value); } }
         public float MaxOffsetY { get { return Mathf.Max(0f, contentHeight.Value - viewportHeight.Value); } }
+
+        // Content still being prepared out of sight (background loading),
+        // logical px: not scrollable yet, but the scrollbar makes room for it
+        // already — so the content's width does not change when it is shown.
+        private readonly Signal<float> preparedWidth, preparedHeight;
+
+        /// Whether there is (or will soon be) something to scroll: when a scrollbar shows.
+        internal bool NeedsBarY { get { return Mathf.Max(contentHeight.Value, preparedHeight.Value) - viewportHeight.Value > 0.5f; } }
+        internal bool NeedsBarX { get { return Mathf.Max(contentWidth.Value, preparedWidth.Value) - viewportWidth.Value > 0.5f; } }
 
         public void ScrollTo(float y)
         {
@@ -90,9 +109,21 @@ namespace MenUI
                 return;
             }
             float scale = context.scale;
-            float top = (element.y - view.contentOriginY) / scale;
+            // In the view's content coordinates (nested scroll views lay
+            // theirs out from their own corner).
+            float elementX = element.x, elementY = element.y;
+            for (Element a = element.parent; a != null && a != view; a = a.parent)
+            {
+                ScrollView inner = a as ScrollView;
+                if (inner != null)
+                {
+                    elementX += inner.x + (int)inner.computed.numbers[StyleProperty.BorderLeftWidth];
+                    elementY += inner.y + (int)inner.computed.numbers[StyleProperty.BorderTopWidth];
+                }
+            }
+            float top = (elementY - view.contentOriginY) / scale;
             float bottom = top + element.height / scale;
-            float left = (element.x - view.contentOriginX) / scale;
+            float left = (elementX - view.contentOriginX) / scale;
             float right = left + element.width / scale;
             float x = offsetX.Peek();
             float y = offsetY.Peek();
@@ -140,9 +171,12 @@ namespace MenUI
         }
 
         /// From layout, physical pixels.
-        internal void SetMetrics(int viewportWidthPixels, int viewportHeightPixels, int contentWidthPixels, int contentHeightPixels)
+        internal void SetMetrics(int viewportWidthPixels, int viewportHeightPixels, int contentWidthPixels, int contentHeightPixels,
+            int preparedWidthPixels = 0, int preparedHeightPixels = 0)
         {
             float scale = context.scale;
+            preparedWidth.Value = preparedWidthPixels / scale;
+            preparedHeight.Value = preparedHeightPixels / scale;
             float newViewportWidth = viewportWidthPixels / scale;
             float newViewportHeight = viewportHeightPixels / scale;
             float newContentWidth = contentWidthPixels / scale;

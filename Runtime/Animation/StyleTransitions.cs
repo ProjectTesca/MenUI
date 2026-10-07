@@ -225,6 +225,8 @@ namespace MenUI
     /// Every element's running transitions, advanced once a frame.
     internal sealed class StyleAnimations : IFrameTask
     {
+        // Suspension is per element (see Tick).
+        Owner IFrameTask.Scope { get { return null; } }
         private readonly MenUIContext context;
         private readonly List<StyleAnimator> active = new List<StyleAnimator>();
         private bool ticking;
@@ -355,6 +357,10 @@ namespace MenUI
             {
                 StyleAnimator animator = active[i];
                 Element e = animator.element;
+                if (e.owner != null && e.owner.IsSuspended())
+                {
+                    continue;   // out of sight: waits where it is
+                }
                 bool attached = context.IsAttached(e);
                 bool layout = false, paint = false, opacity = false, restyle = false, layer = false, layerEnded = false;
                 List<PropertyAnimation> animations = animator.animations;
@@ -423,6 +429,7 @@ namespace MenUI
     /// scope and removes them (MenUIContext.Leave).
     internal sealed class ExitTask : IFrameTask
     {
+        Owner IFrameTask.Scope { get { return null; } }   // an exit always finishes
         private const float Timeout = 10f;   // seconds; a stuck exit still ends
         private readonly List<Element> leaving;
         private readonly Owner owner;

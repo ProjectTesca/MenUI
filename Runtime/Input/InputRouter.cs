@@ -362,24 +362,36 @@ namespace MenUI
         {
             TransformGroups groups = context.groups;
             Vector4[] clips = groups.clips;
+            // Neighbors in the list mostly share a group: map the pointer into
+            // a group once, not once per element.
+            int mappedGroup = -1;
+            bool insideGroup = true;
+            float localX = x, localY = y;
             for (int i = hitList.Count - 1; i >= 0; i--)
             {
                 Element e = hitList[i];
-                float localX = x, localY = y;
                 int group = e.group;
-                if (group != TransformGroups.Root)
+                if (group != mappedGroup)
                 {
-                    Vector4 clip = clips[group];
-                    if (x < clip.x || y < clip.y || x >= clip.z || y >= clip.w)
+                    mappedGroup = group;
+                    insideGroup = true;
+                    localX = x;
+                    localY = y;
+                    if (group != TransformGroups.Root)
                     {
-                        continue;
+                        Vector4 clip = clips[group];
+                        insideGroup = x >= clip.x && y >= clip.y && x < clip.z && y < clip.w;
+                        localX = groups.LocalX(group, x);
+                        localY = groups.LocalY(group, y);
                     }
-                    localX = groups.LocalX(group, x);
-                    localY = groups.LocalY(group, y);
+                }
+                if (!insideGroup)
+                {
+                    continue;
                 }
                 if (localX >= e.x && localY >= e.y && localX < e.x + e.width && localY < e.y + e.height
                     && localX >= e.clipLeft && localY >= e.clipTop && localX < e.clipRight && localY < e.clipBottom
-                    && (excluded == null || !IsInclusiveAncestor(excluded, e)))
+                    && (excluded == null || !IsInclusiveAncestor(excluded, e)) && !e.InsideInert())
                 {
                     return e;
                 }
