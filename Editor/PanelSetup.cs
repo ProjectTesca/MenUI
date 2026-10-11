@@ -115,7 +115,8 @@ namespace MenUI.Editor
                 if (app.shapingTexts == null || app.shapingTexts.Length == 0 || app.shapingTexts[0] == null
                     || app.renderCamera == null || app.quadPoolRenderer == null || app.displayRenderer == null
                     || app.textInputFields == null || app.textInputFields.Length == 0 || app.textInputFields[0] == null
-                    || app.textInputCanvas == null || !SameFamilies(app.fontFamilies, families))
+                    || app.textInputCanvas == null || app.imageCopyMaterial == null
+                    || !SameFamilies(app.fontFamilies, families))
                 {
                     SetUp(app);
                 }
@@ -292,6 +293,7 @@ namespace MenUI.Editor
             app.textInputFields = inputFields;
             app.textInputTransforms = inputTransforms;
             app.textInputCanvas = inputCanvas;
+            app.imageCopyMaterial = PackageAssets.ImageCopyMaterial();
             EditorUtility.SetDirty(app);
             EditorSceneManager.MarkSceneDirty(panel.scene);
 

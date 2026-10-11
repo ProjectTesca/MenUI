@@ -829,6 +829,42 @@ namespace MenUI
             }
         }
 
+        /// An image drawn over `left, top, width, height` (physical px, the
+        /// whole image — it may reach past the content box `box`, which crops
+        /// it) from its atlas copy, tinted, inside the element's rounded box.
+        internal void Image(ImageElement e, Vector4 box, float left, float top, float width, float height,
+            ImageCopy copy, Color tint, float opacity)
+        {
+            Color linear = Premultiplied(tint, opacity);
+            if (linear.a <= 0f && !keepTransparent)
+            {
+                return;
+            }
+            // Cropped to the content box; the uv follows the crop.
+            float right = left + width, bottom = top + height;
+            float quadLeft = Mathf.Max(left, box.x);
+            float quadTop = Mathf.Max(top, box.y);
+            float quadRight = Mathf.Min(right, box.x + box.z);
+            float quadBottom = Mathf.Min(bottom, box.y + box.w);
+            if (quadRight <= quadLeft || quadBottom <= quadTop)
+            {
+                return;
+            }
+            Vector4 region = e.context.images.RegionOf(copy);   // left, bottom, right, top (v up)
+            float uLeft = Mathf.Lerp(region.x, region.z, (quadLeft - left) / width);
+            float uRight = Mathf.Lerp(region.x, region.z, (quadRight - left) / width);
+            float vTop = Mathf.Lerp(region.w, region.y, (quadTop - top) / height);
+            float vBottom = Mathf.Lerp(region.w, region.y, (quadBottom - top) / height);
+            int record = Begin(e, quadLeft, quadTop, quadRight - quadLeft, quadBottom - quadTop);
+            if (record < 0) return;
+            Vector4 radii = CornerRadii(e);
+            renderer.Texel(record, 2, linear);
+            renderer.Texel(record, 3, uLeft, vBottom, uRight, vTop);
+            renderer.Texel(record, 4, KindImage + GroupStride * e.group, copy.page, 0f, 0f);
+            renderer.Texel(record, 5, radii.x, radii.y, radii.z, radii.w);
+            renderer.Texel(record, 7, e.x, e.y, e.width, e.height);
+        }
+
         // ================================================================
         // Graphics (see Graphic): ripples, shapes, arcs, lines. Each is one
         // record, drawn even when transparent (a steady record count).

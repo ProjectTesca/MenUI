@@ -13,6 +13,10 @@ Shader "MenUI/Panel"
         _Atlas5 ("Atlas 5", 2D) = "black" {}
         _Atlas6 ("Atlas 6", 2D) = "black" {}
         _Atlas7 ("Atlas 7", 2D) = "black" {}
+        _Image0 ("Image Page 0", 2D) = "black" {}
+        _Image1 ("Image Page 1", 2D) = "black" {}
+        _Image2 ("Image Page 2", 2D) = "black" {}
+        _Image3 ("Image Page 3", 2D) = "black" {}
     }
     SubShader
     {
@@ -62,6 +66,11 @@ Shader "MenUI/Panel"
             sampler2D _Atlas5;
             sampler2D _Atlas6;
             sampler2D _Atlas7;
+            // Image atlas pages (ImageAtlas.cs): premultiplied, linear.
+            sampler2D _Image0;
+            sampler2D _Image1;
+            sampler2D _Image2;
+            sampler2D _Image3;
 
             struct appdata
             {
@@ -77,7 +86,7 @@ Shader "MenUI/Panel"
                 nointerpolation float4 color : TEXCOORD1;
                 nointerpolation float4 radii : TEXCOORD2;      // tl, tr, br, bl
                 nointerpolation float4 parameters : TEXCOORD3; // kind, atlas, sigma, spread
-                nointerpolation float4 borderColor : TEXCOORD4;
+                nointerpolation float4 borderColor : TEXCOORD4; // | image: corner radii
                 nointerpolation float4 extra : TEXCOORD5;      // border widths t r b l | element rect
                 nointerpolation float4 shape : TEXCOORD6;      // x, y, width, height
                 nointerpolation float4 clip : TEXCOORD7;       // left, top, right, bottom
@@ -180,6 +189,14 @@ Shader "MenUI/Panel"
                 if (index < 5.5) return tex2D(_Atlas5, uv).a;
                 if (index < 6.5) return tex2D(_Atlas6, uv).a;
                 return tex2D(_Atlas7, uv).a;
+            }
+
+            float4 SampleImage(float page, float2 uv)
+            {
+                if (page < 0.5) return tex2D(_Image0, uv);
+                if (page < 1.5) return tex2D(_Image1, uv);
+                if (page < 2.5) return tex2D(_Image2, uv);
+                return tex2D(_Image3, uv);
             }
 
             // Coverage of a signed distance field antialiased by its own
@@ -310,7 +327,12 @@ Shader "MenUI/Panel"
                 }
                 if (kind < KIND_IMAGE + 0.5)
                 {
-                    return 0;
+                    // An atlas page region (parameters.y: the page), tinted
+                    // by the color and kept inside the element's rounded box
+                    // (shape, radii in the border color texel).
+                    float4 image = SampleImage(input.parameters.y, input.pixelAndUv.zw);
+                    float inside = saturate(0.5 - RoundedBox(p, input.shape, input.borderColor) * zoom);
+                    return image * float4(input.color.rgb, 1) * input.color.a * inside;
                 }
                 if (kind < KIND_RIPPLE + 0.5)
                 {

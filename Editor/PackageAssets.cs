@@ -138,6 +138,7 @@ namespace MenUI.Editor
 
         public static Material PanelMaterial() { return LoadOrCreateMaterial("Panel", "MenUI/Panel"); }
         public static Material DisplayMaterial() { return LoadOrCreateMaterial("PanelDisplay", "MenUI/PanelDisplay"); }
+        public static Material ImageCopyMaterial() { return LoadOrCreateMaterial("ImageCopy", "MenUI/ImageCopy"); }
 
         private static Material LoadOrCreateMaterial(string name, string shaderName)
         {

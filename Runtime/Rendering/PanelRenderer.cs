@@ -6,9 +6,9 @@
 //   0: quad x, y, width, height            (physical px, y down)
 //   1: clip left, top, right, bottom
 //   2: color (linear, straight alpha)
-//   3: corner radii tl, tr, br, bl  |  glyph atlas uv: left, bottom, right, top
-//   4: kind, atlas index, shadow sigma, shadow spread
-//   5: border color
+//   3: corner radii tl, tr, br, bl  |  glyph / image uv: left, bottom, right, top
+//   4: kind, atlas index (image: page), shadow sigma, shadow spread
+//   5: border color                  |  image: corner radii
 //   6: border widths t, r, b, l     |  shadows: the element's rectangle
 //   7: shape rectangle x, y, width, height
 
@@ -114,6 +114,12 @@ namespace MenUI
             {
                 material.SetTexture("_Atlas" + index, atlas);
             }
+        }
+
+        /// An image atlas page (null: none) for the shader's slot `index`.
+        internal void SetImagePage(int index, Texture page)
+        {
+            material.SetTexture("_Image" + index, page);
         }
 
         internal int RecordCount { get { return records.RecordCount; } }

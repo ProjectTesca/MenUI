@@ -73,6 +73,8 @@ namespace MenUI
         public UnityEngine.UI.InputField[] textInputFields;
         public RectTransform[] textInputTransforms;
         public RectTransform textInputCanvas;
+        // MenUI/ImageCopy: copies images into the panel's image atlas.
+        public Material imageCopyMaterial;
 
         private MenUIContext ui;
         // What the panel was last sized to, and its world size per physical
@@ -102,6 +104,9 @@ namespace MenUI
         private const float DistanceInterval = 0.2f;   // seconds between measurements
         private float distanceTimer;
         private bool asleep;
+
+        // Images downloaded for this panel (LoadImage, Image(url)).
+        private WebImages webImageLoader;
 
         // ReleasePanel during the panel's own frame waits for its end.
         private bool inFrame;
@@ -137,6 +142,8 @@ namespace MenUI
             ui.SetPointerSource(CreatePointerSource());
             ui.SetTextInputHost(CreateTextInputHost());
             ui.diagnostics = logPerformance;
+            ui.images.copyMaterial = imageCopyMaterial;
+            webImageLoader = new WebImages(ui, (VRC.Udon.Common.Interfaces.IUdonEventReceiver)this);
             long created = Stopwatch.GetTimestamp();
 
             Element content = null;
@@ -345,8 +352,8 @@ namespace MenUI
             scale = appliedScale = newScale;
         }
 
-        /// Frees the panel's GPU memory (its RenderTexture, record texture and
-        /// material copies) and stops it for good: it shows nothing afterwards
+        /// Frees the panel's GPU memory (its RenderTexture, image atlas pages,
+        /// record texture and material copies) and stops it for good: it shows nothing afterwards
         /// and cannot be started again. Destroying the panel's GameObject
         /// does this on its own; to hide a panel for a while, deactivate it
         /// instead (a hidden panel costs nothing but this memory).
@@ -383,7 +390,10 @@ namespace MenUI
         private void ReleaseGraphics()
         {
             PanelRenderer panelRenderer = ui.renderer;
+            ImageAtlas images = ui.images;
             ui = null;   // PostLateUpdate stops here
+            images.Release();
+            webImageLoader.Release();
             panelRenderer.Release();
         }
 
@@ -445,6 +455,48 @@ namespace MenUI
         protected TextElement Text(Func<string> content) { return ui.Text(content); }
         protected TextBox TextBox(Signal<string> value) { return ui.TextBox(value); }
         protected Graphic Graphic(Action<GraphicCanvas> draw) { return ui.Graphic(draw); }
+        protected ImageElement Image(Texture texture) { return ui.Image(texture); }
+        protected ImageElement Image(Texture texture, Rect pixels) { return ui.Image(texture, pixels); }
+        protected ImageElement Image(Func<Texture> texture) { return ui.Image(texture); }
+        protected ImageElement Image(ImageSource source) { return ui.Image(source); }
+
+        // ---- images from the web ----------------------------------------------
+
+        /// The image at `url` (a VRCUrl set in the inspector: VRChat makes
+        /// them only there), downloading it unless it is here or on its way.
+        /// It is drawn once it arrives; `IsLoaded` / `HasFailed` say how it
+        /// went (reactively). VRChat downloads one image every 5 seconds for
+        /// the whole world, PNG or JPEG up to 2048 x 2048, from trusted
+        /// domains unless the player allows untrusted URLs.
+        protected ImageSource LoadImage(VRCUrl url) { return webImageLoader.Load(url); }
+
+        /// An image of the picture at `url` (see LoadImage). Give it a size:
+        /// before it arrives it has none of its own.
+        protected ImageElement Image(VRCUrl url) { return ui.Image(webImageLoader.Load(url)); }
+
+        /// The image at `url` once it has arrived, or why it did not.
+        protected Task<Result<ImageSource, ImageError>> LoadImageAsync(VRCUrl url)
+        {
+            return webImageLoader.WhenLoaded(webImageLoader.Load(url));
+        }
+
+        /// The SDK's image download events, for LoadImage. A panel that
+        /// overrides them calls base.OnImageLoadSuccess / OnImageLoadError.
+        public override void OnImageLoadSuccess(VRC.SDK3.Image.IVRCImageDownload result)
+        {
+            if (webImageLoader != null)
+            {
+                webImageLoader.Succeeded(result);
+            }
+        }
+
+        public override void OnImageLoadError(VRC.SDK3.Image.IVRCImageDownload result)
+        {
+            if (webImageLoader != null)
+            {
+                webImageLoader.Failed(result);
+            }
+        }
         protected TextBox TextArea(Signal<string> value) { return ui.TextArea(value); }
         protected Signal<T> Signal<T>(T initial) { return ui.Signal(initial); }
         protected Computed<T> Computed<T>(Func<T> compute) { return ui.Computed(compute); }

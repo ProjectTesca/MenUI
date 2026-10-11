@@ -607,7 +607,7 @@ namespace MenUI
             if (e.IsLeaf)
             {
                 int leafWidth, leafHeight;
-                e.MeasureContent(innerWidth, out leafWidth, out leafHeight);
+                e.MeasureContent(innerWidth, widthDefinite, innerHeight, out leafWidth, out leafHeight);
                 contentWidth = leafWidth;
                 return leafHeight;
             }

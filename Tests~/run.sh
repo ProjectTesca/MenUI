@@ -22,7 +22,7 @@ trap 'rm -rf "$OUT"' EXIT
   echo "-r:Library/ScriptAssemblies/Unity.TextMeshPro.dll"
   echo "-r:Library/ScriptAssemblies/UnityEngine.UI.dll"
   # Device sources (VRChat SDK) and the behaviour itself stay out: the rest must not need them.
-  find "$PACKAGE/Runtime" -name '*.cs' -not -path '*Verification*' -not -name MenUIApp.cs -not -name MaterialApp.cs -not -name DesktopPointerSource.cs
+  find "$PACKAGE/Runtime" -name '*.cs' -not -path '*Verification*' -not -name MenUIApp.cs -not -name MaterialApp.cs -not -name DesktopPointerSource.cs -not -name WebImages.cs
   echo "$PACKAGE/Tests~/HeadlessTests.cs"
 } > "$OUT/build.rsp"
 

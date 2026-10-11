@@ -238,6 +238,47 @@ display, with their records already made, so it does not stall. Turn on
 **logPerformance** to get a summary every 5 seconds (frames, frames asleep,
 renders, MenUI's average and worst ms, frame tasks running and waiting).
 
+## Images
+
+`Image(texture)` draws a texture (CSS `img`); `Image(sheet, new Rect(x, y, w, h))`
+one sprite of a sheet (x and y from its top-left); `Image(() => ...)` follows
+signals. With no size an image takes its natural size (one texture pixel per
+logical pixel); with one side set the other keeps the aspect ratio; with both,
+`.Fit(ImageFit.Contain / Cover / None / ScaleDown)` places it (default `Fill`,
+as CSS). `.BorderRadius` rounds it and `.Tint(color)` multiplies its colors.
+
+Images stay in the panel's single draw: each is copied, at about the size it
+is shown, into an atlas page of its panel (up to 4 pages, 2048 px each, made
+when needed). A copy no element holds any more stays cached until room is
+needed; an image's copies are let go when the reactive scope that built it
+ends (a `Show` branch, a list row). Panels set up before images existed are
+set up again on their own (they need the MenUI/ImageCopy material).
+
+Images from the web: `Image(url)` and `LoadImage(url)` take a `VRCUrl` set in
+the inspector (VRChat makes them only there). The download starts at once,
+once per URL; the image draws when it arrives. Give such an image a size — it
+has none of its own before then. Its source's `IsLoaded`, `HasFailed` and
+`Error` are reactive, for a placeholder or a message:
+
+```csharp
+public VRCUrl bannerUrl;
+
+ImageSource banner = LoadImage(bannerUrl);
+Show(() => banner.IsLoaded,
+    () => Image(banner).Size(400, 225).Fit(ImageFit.Cover),
+    () => Div().Size(400, 225).Children(Text(() => banner.HasFailed ? banner.Error.Message : "Loading...")));
+
+Result<ImageSource, ImageError> loaded = await LoadImageAsync(bannerUrl);
+```
+
+VRChat's rules apply: one download every 5 seconds for the whole world (it
+queues them), PNG or JPEG up to 2048 x 2048, trusted domains unless the
+player allows untrusted URLs; each player downloads for themselves. A
+downloaded texture is let go when the atlas drops its last copy (nothing
+showed it for a while and room was needed), and downloaded again if it is
+drawn again. A panel that overrides `OnImageLoadSuccess` / `OnImageLoadError`
+calls the base method.
+
 ## Live resizing
 
 `ResizePanel(width, height, scale)` (or editing **bufferWidth**, **bufferHeight**

@@ -668,6 +668,14 @@ namespace MenUI
             contentHeight = 0;
         }
 
+        /// The same, knowing whether the width is imposed and the content
+        /// height set (-1: not): what an image needs to keep its aspect ratio.
+        internal virtual void MeasureContent(int availableWidth, bool widthDefinite, int innerHeight,
+            out int contentWidth, out int contentHeight)
+        {
+            MeasureContent(availableWidth, out contentWidth, out contentHeight);
+        }
+
         /// Min-content width of a leaf's content (the narrowest it can be
         /// without overflowing: its longest unbreakable run).
         internal virtual int MinContentWidthOfContent()

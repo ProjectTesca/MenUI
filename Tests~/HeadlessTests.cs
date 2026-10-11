@@ -542,6 +542,175 @@ namespace MenUI
 
 
         // ---- painting: incremental paints equal a fresh full paint ----
+        // ---- images ----
+        static ImageSource FakeImage(int width, int height) => new ImageSource(null, 0f, 0f, 1f, 1f, width, height);
+
+        static Vector4 RecordTexel(MenUIContext ui, int record, int texel)
+        {
+            Color c = ui.painter.records.pixels[record * RecordBuffer.TexelsPerRecord + texel];
+            return new Vector4(c.r, c.g, c.b, c.a);
+        }
+
+        static void ImageTests()
+        {
+            {
+                // Sizing: natural size, one side keeps the aspect ratio, both as set.
+                var ui = NewContext(2f, 1000, 1000);
+                ImageSource wide = FakeImage(200, 100);
+                ImageElement natural = ui.Image(wide);
+                ImageElement byWidth = ui.Image(wide).Width(100);
+                ImageElement byHeight = ui.Image(wide).Height(80);
+                ImageElement both = ui.Image(wide).Size(30, 40);
+                Box row = ui.Div().Column().AlignItems(Align.Start)
+                    .Children(natural, byWidth, byHeight, both);
+                Layout(ui, row);
+                Check("image: natural size, a texture pixel per logical pixel", natural.Width == 400 && natural.Height == 200, R(natural));
+                Check("image: a set width keeps the aspect ratio", byWidth.Width == 200 && byWidth.Height == 100, R(byWidth));
+                Check("image: a set height keeps the aspect ratio", byHeight.Width == 320 && byHeight.Height == 160, R(byHeight));
+                Check("image: both sides set", both.Width == 60 && both.Height == 80, R(both));
+            }
+
+            {
+                // Fit: cover crops (the uv follows), contain letterboxes.
+                var ui = NewContext(1f, 400, 400);
+                ImageSource wide = FakeImage(200, 100);
+                ImageElement cover = ui.Image(wide).Size(100, 100).Fit(ImageFit.Cover);
+                ImageElement contain = ui.Image(wide).Size(100, 100).Fit(ImageFit.Contain).BorderRadius(10);
+                ImageElement coverToo = ui.Image(wide).Size(100, 100).Fit(ImageFit.Cover);
+                Layout(ui, ui.Div().Children(cover, contain, coverToo));
+                ui.Update();
+                ImageCopy copy = cover.held;
+                Vector4 region = ui.images.RegionOf(copy);
+                Vector4 coverQuad = RecordTexel(ui, cover.contentRecordStart, 0);
+                Vector4 coverUv = RecordTexel(ui, cover.contentRecordStart, 3);
+                float quarter = (region.z - region.x) * 0.25f;
+                Check("image cover: drawn over the box, cropped", cover.contentRecordCount == 1
+                    && coverQuad == new Vector4(0f, 0f, 100f, 100f), coverQuad.ToString());
+                Check("image cover: the middle half of the image", Near(coverUv.x, region.x + quarter, 1e-5f)
+                    && Near(coverUv.z, region.z - quarter, 1e-5f) && coverUv.y == region.y && coverUv.w == region.w, coverUv + " " + region);
+                Vector4 containQuad = RecordTexel(ui, contain.contentRecordStart, 0);
+                Check("image contain: whole, centered, from a copy half the size", containQuad == new Vector4(0f, 125f, 100f, 50f)
+                    && RecordTexel(ui, contain.contentRecordStart, 3) == ui.images.RegionOf(contain.held)
+                    && contain.held.level == 1 && copy.level == 0, containQuad.ToString());
+                Check("image: rounded by the element's radii", RecordTexel(ui, contain.contentRecordStart, 5) == new Vector4(10f, 10f, 10f, 10f)
+                    && RecordTexel(ui, contain.contentRecordStart, 7) == new Vector4(0f, 100f, 100f, 100f));
+                Check("image: the same image at the same size shares its copy", coverToo.held == copy
+                    && ui.images.copiesMade == 2 && copy.holders.Count == 2);
+                Check("image: records verify", ui.painter.Verify(ui) == null, ui.painter.Verify(ui) ?? "");
+
+                cover.Tint(new Color(1f, 0f, 0f, 0.5f));
+                ui.Update();
+                Check("image: a tint repaints in place", !ui.painter.lastPaintWasFull
+                    && RecordTexel(ui, cover.contentRecordStart, 2).w == 0.5f && ui.painter.Verify(ui) == null);
+            }
+
+            {
+                // Level of detail: a large image shown small is copied small.
+                var ui = NewContext(1f, 400, 400);
+                ImageSource photo = FakeImage(1000, 800);
+                ImageElement thumbnail = ui.Image(photo).Width(100);
+                ImageElement large = ui.Image(photo).Width(300);
+                Layout(ui, ui.Div().Children(thumbnail, large));
+                ui.Update();
+                Check("image: copied at the level that covers its size", thumbnail.held.level == 3
+                    && thumbnail.held.width == 125 && thumbnail.held.height == 100, thumbnail.held.level + " " + thumbnail.held.width);
+                Check("image: a larger use, a larger copy", large.held.level == 1 && large.held.width == 500);
+
+                // A new source releases the old copy (cached, not held).
+                ImageCopy old = thumbnail.held;
+                thumbnail.SetSource(FakeImage(50, 50));
+                ui.Update();
+                Check("image: a new source lets the old copy go", old.holders.Count == 0 && thumbnail.held != old
+                    && thumbnail.Width == 100 && thumbnail.Height == 100 && ui.painter.Verify(ui) == null, R(thumbnail));
+            }
+
+            {
+                // Released with its owner; room made by compaction, then pages.
+                var ui = NewContext(1f, 400, 400);
+                var showFirst = ui.Signal(true);
+                ImageElement[] big = new ImageElement[4];
+                for (int i = 2; i < 4; i++) big[i] = ui.Image(FakeImage(2000, 2000)).Size(40, 40).Fit(ImageFit.None);
+                // Built in the branch: owned by it, released when it goes.
+                Region first = ui.Show(() => showFirst.Value, () =>
+                {
+                    for (int i = 0; i < 2; i++) big[i] = ui.Image(FakeImage(2000, 2000)).Size(40, 40).Fit(ImageFit.None);
+                    return ui.Div().Children(big[0], big[1]);
+                });
+                Layout(ui, ui.Div().Flex().Children(first, big[2], big[3]));
+                ui.Update();
+                Check("image atlas: one large page per full-size copy", ui.images.pageCount == 4
+                    && ui.images.pages[0].size == 2048, ui.images.pageCount + " pages");
+                ImageCopy dropped = big[0].held;
+                showFirst.Value = false;
+                ui.Update();
+                Check("image: released with its owner", dropped.holders.Count == 0 && big[0].held == null);
+
+                ImageElement late = ui.Image(FakeImage(2000, 2000)).Size(40, 40).Fit(ImageFit.None);
+                ((Box)ui.root.children[0]).AppendChild(late);
+                ui.Update();
+                Check("image atlas: no room, so compaction is due", late.held == null && ui.images.compactionPending);
+                ui.Update();
+                Check("image atlas: compacted, then drawn", late.held != null && late.contentRecordCount == 1
+                    && ui.images.pageCount == 3 && ui.images.copies.Count == 3 && dropped.source.copies[0] == null,
+                    ui.images.pageCount + " pages, " + ui.images.copies.Count + " copies");
+                Check("image atlas: the kept copies repainted where they moved", ui.painter.Verify(ui) == null
+                    && big[2].held.page >= 0 && big[3].held.page >= 0, ui.painter.Verify(ui) ?? "");
+            }
+        }
+
+        static void WebImageTests()
+        {
+            {
+                // A download: no size before it arrives, then sized and drawn.
+                var ui = NewContext(1f, 400, 400);
+                var web = new ImageSource(ui.runtime, "https://example.com/a.png");
+                ImageElement sized = null, byWidth = null;
+                var showFirst = ui.Signal(true);
+                Region first = ui.Show(() => showFirst.Value, () =>
+                {
+                    sized = ui.Image(web).Size(100, 50);
+                    byWidth = ui.Image(web).Width(80);
+                    return ui.Div().Children(sized, byWidth);
+                });
+                int loadedRuns = 0;
+                bool seenLoaded = false;
+                ui.Bind(() => { seenLoaded = web.IsLoaded; loadedRuns++; });
+                Layout(ui, ui.Div().Children(first));
+                ui.Update();
+                Check("web image: before it arrives, the set size and nothing drawn", sized.Width == 100 && sized.Height == 50
+                    && byWidth.Height == 0 && sized.contentRecordCount == 0 && !seenLoaded, R(byWidth));
+                web.Arrived(null, 200, 100);
+                ui.Update();
+                Check("web image: arrived, its aspect ratio sizes and it draws", byWidth.Height == 40
+                    && sized.contentRecordCount == 1 && byWidth.contentRecordCount == 1 && ui.painter.Verify(ui) == null, R(byWidth));
+                Check("web image: IsLoaded is reactive", seenLoaded && loadedRuns == 2, loadedRuns.ToString());
+
+                // Let go when compaction drops its last copy; drawn again, asked for again.
+                var unloaded = new System.Collections.Generic.List<ImageSource>();
+                var asked = new System.Collections.Generic.List<ImageSource>();
+                ui.unloadImage = source => { unloaded.Add(source); source.texture = null; source.SetState(ImageSource.StateUnloaded); };
+                ui.downloadImage = source => { asked.Add(source); source.SetState(ImageSource.StateLoading); };
+                var show = ui.Signal(true);
+                Region region = ui.Show(() => show.Value, () => ui.Image(web).Size(100, 50));
+                ((Box)ui.root.children[0]).AppendChild(region);
+                showFirst.Value = false;
+                ui.Update();
+                show.Value = false;
+                ui.Update();
+                ui.images.compactionPending = true;   // as when room is needed
+                ui.Update();
+                Check("web image: no copy left, its texture is let go", unloaded.Count == 1
+                    && web.state == ImageSource.StateUnloaded && web.Width == 200, web.state.ToString());
+                show.Value = true;
+                ui.Update();
+                ui.Update();
+                Check("web image: drawn again, downloaded again", asked.Count == 1 && web.state == ImageSource.StateLoading);
+                web.Arrived(null, 200, 100);
+                ui.Update();
+                Check("web image: back", ((Element)region.children[0]).contentRecordCount == 1 && ui.painter.Verify(ui) == null);
+            }
+        }
+
         static void PaintTests()
         {
             var random = new System.Random(4321);
@@ -2698,6 +2867,8 @@ namespace MenUI
             MaterialTests();
             LoadingTests();
             PaintTests();
+            ImageTests();
+            WebImageTests();
 
             Console.WriteLine(failures == 0 ? "ALL PASSED" : failures + " FAILED");
             return failures;

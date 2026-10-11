@@ -27,6 +27,14 @@ namespace MenUI
         internal long shapeTicks;
         internal int shapeCount;
         internal readonly PanelRenderer renderer;
+        /// Where images are copied to be drawn (see ImageAtlas).
+        internal readonly ImageAtlas images;
+        // Downloaded images (MenUIApp's WebImages): start a download again,
+        // let a texture go. Null without one (tests).
+        internal Action<ImageSource> downloadImage;
+        internal Action<ImageSource> unloadImage;
+        // Downloads asked for while painting, started before the next layout.
+        private readonly List<ImageSource> imageRequests = new List<ImageSource>();
         internal readonly StyleResolver resolver = new StyleResolver();
         internal readonly LayoutEngine layout = new LayoutEngine();
         internal readonly Painter painter;
@@ -159,6 +167,7 @@ namespace MenUI
                 }
             }
             this.renderer = renderer;
+            images = new ImageAtlas(this, renderer);
             // Without a renderer (tests), the records are painted all the same.
             painter = new Painter(renderer != null ? renderer.records : new RecordBuffer(4096));
 
@@ -554,6 +563,24 @@ namespace MenUI
             shapeCount = 0;
             long mark = Stopwatch.GetTimestamp();
 
+            // An image copy did not fit last frame: make room (its holders
+            // repaint).
+            if (images.compactionPending)
+            {
+                images.Compact();
+            }
+            if (imageRequests.Count > 0)
+            {
+                for (int i = 0; i < imageRequests.Count; i++)
+                {
+                    if (downloadImage != null && imageRequests[i].state == ImageSource.StateUnloaded)
+                    {
+                        downloadImage(imageRequests[i]);
+                    }
+                }
+                imageRequests.Clear();
+            }
+
             // Layout can write reactive values (scroll extents) whose bindings
             // restyle something; one more round settles that in this frame.
             for (int round = 0; round < 2; round++)
@@ -646,6 +673,43 @@ namespace MenUI
             TextElement element = new TextElement(this, string.Empty);
             Bind(() => element.SetContent(content()));
             return element;
+        }
+
+        /// A downloaded image that was let go is drawn again: download it
+        /// before the next frame's layout (not in the middle of a paint).
+        internal void RequestImage(ImageSource source)
+        {
+            if (!imageRequests.Contains(source))
+            {
+                imageRequests.Add(source);
+            }
+        }
+
+        /// An image of `texture` (CSS `img`, see ImageElement).
+        public ImageElement Image(Texture texture)
+        {
+            return new ImageElement(this, images.SourceFor(texture, new Rect()));
+        }
+
+        /// The part `pixels` of `texture` (x and y from its top-left): one
+        /// sprite of a sheet.
+        public ImageElement Image(Texture texture, Rect pixels)
+        {
+            return new ImageElement(this, images.SourceFor(texture, pixels));
+        }
+
+        /// The image `texture()` names, following the signals it reads (null:
+        /// nothing drawn).
+        public ImageElement Image(Func<Texture> texture)
+        {
+            ImageElement element = new ImageElement(this, null);
+            Bind(() => element.SetSource(images.SourceFor(texture(), new Rect())));
+            return element;
+        }
+
+        public ImageElement Image(ImageSource source)
+        {
+            return new ImageElement(this, source);
         }
 
         /// Draws shapes, arcs, lines and ripples (see Graphic); `draw` reruns
