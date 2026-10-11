@@ -246,6 +246,15 @@ bigger pixel size makes a bigger panel whose layout reflows; a bigger scale
 zooms the content, drawn sharp. `resizePivot` is the point that stays in
 place. The render texture keeps spare room, so animating the size is cheap.
 
+## Spawning and releasing
+
+A set-up panel can be cloned: keep one inactive in the scene, `Instantiate`
+it, place the clone and activate it (it builds then). Each panel holds GPU
+memory of its own (its render texture, record texture and material copies).
+`ReleasePanel()` frees it and stops the panel for good, and destroying the
+panel's GameObject does the same on its own. To hide a panel for a while,
+deactivate it instead.
+
 ## Fonts
 
 MenUI ships Noto Sans JP (SIL Open Font License, see

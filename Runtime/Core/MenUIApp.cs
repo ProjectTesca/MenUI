@@ -103,6 +103,10 @@ namespace MenUI
         private float distanceTimer;
         private bool asleep;
 
+        // ReleasePanel during the panel's own frame waits for its end.
+        private bool inFrame;
+        private bool releaseRequested;
+
         /// The panel's context: factory, reactive runtime and pipeline.
         protected MenUIContext UI { get { return ui; } }
 
@@ -159,6 +163,17 @@ namespace MenUI
             {
                 return;
             }
+            inFrame = true;
+            RunFrame();
+            inFrame = false;
+            if (releaseRequested)
+            {
+                ReleasePanel();
+            }
+        }
+
+        private void RunFrame()
+        {
             long frameStart = Stopwatch.GetTimestamp();
             UpdateDistance();
             if (asleep)
@@ -328,6 +343,48 @@ namespace MenUI
             bufferWidth = appliedWidth = width;
             bufferHeight = appliedHeight = height;
             scale = appliedScale = newScale;
+        }
+
+        /// Frees the panel's GPU memory (its RenderTexture, record texture and
+        /// material copies) and stops it for good: it shows nothing afterwards
+        /// and cannot be started again. Destroying the panel's GameObject
+        /// does this on its own; to hide a panel for a while, deactivate it
+        /// instead (a hidden panel costs nothing but this memory).
+        public void ReleasePanel()
+        {
+            if (ui == null)
+            {
+                return;
+            }
+            if (inFrame)
+            {
+                // Called from the panel's own handlers (a close button):
+                // the frame finishes first, then the memory goes.
+                releaseRequested = true;
+                return;
+            }
+            displayRenderer.enabled = false;   // its material is about to go
+            if (textInputCanvas != null)
+            {
+                textInputCanvas.gameObject.SetActive(false);
+            }
+            ReleaseGraphics();
+        }
+
+        private void OnDestroy()
+        {
+            // The children may be gone already: only the panel's own memory.
+            if (ui != null)
+            {
+                ReleaseGraphics();
+            }
+        }
+
+        private void ReleaseGraphics()
+        {
+            PanelRenderer panelRenderer = ui.renderer;
+            ui = null;   // PostLateUpdate stops here
+            panelRenderer.Release();
         }
 
         /// The panel's collider covers the display quad wherever it was moved

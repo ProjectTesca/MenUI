@@ -71,6 +71,7 @@ namespace MenUI
                     textureWidth = Mathf.Max(textureWidth, Mathf.CeilToInt(width * 1.25f));
                     textureHeight = Mathf.Max(textureHeight, Mathf.CeilToInt(height * 1.25f));
                     target.Release();
+                    Object.Destroy(target);
                 }
                 target = new RenderTexture(textureWidth, textureHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
                 camera.targetTexture = target;
@@ -81,6 +82,24 @@ namespace MenUI
             float usedWidth = (float)width / target.width;
             float usedHeight = (float)height / target.height;
             displayMaterial.SetVector("_MainTex_ST", new Vector4(usedWidth, usedHeight, 0f, 1f - usedHeight));
+        }
+
+        /// Frees the GPU memory the panel holds: its RenderTexture, the
+        /// record texture and its copies of the two materials. Nothing can be
+        /// drawn afterwards; the display must not be shown any more either
+        /// (its material is gone).
+        internal void Release()
+        {
+            camera.targetTexture = null;
+            if (target != null)
+            {
+                target.Release();
+                Object.Destroy(target);
+                target = null;
+            }
+            Object.Destroy(recordTexture);
+            Object.Destroy(material);
+            Object.Destroy(displayMaterial);
         }
 
         internal void SetGroups(Vector4[] offsets, Vector4[] clips)
